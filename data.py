@@ -16,6 +16,7 @@ from typing import Optional
 
 AGY_DIR = Path.home() / ".gemini" / "antigravity-cli"
 DB_PATH = AGY_DIR / "conversation_summaries.db"
+JETBOX_PB_PATH = AGY_DIR / "jetbox_summaries_proto.pb"
 BRAIN_DIR = AGY_DIR / "brain"
 CONVERSATIONS_DIR = AGY_DIR / "conversations"
 ANNOTATIONS_DIR = AGY_DIR / "annotations"
@@ -280,7 +281,8 @@ def fetch_sessions(
             """
             SELECT conversation_id, title, preview, step_count,
                    last_modified_time, workspace_uris, status,
-                   not_fully_idle, parent_conversation_id, agent_name
+                   not_fully_idle, parent_conversation_id, agent_name,
+                   source, app_data_dir
             FROM conversation_summaries
             WHERE killed = 0
             ORDER BY last_modified_time DESC
@@ -298,6 +300,17 @@ def fetch_sessions(
 
     for r in rows:
         cid = r["conversation_id"]
+        locked = check_presence_lock(cid)
+        app_dir = str(r["app_data_dir"] or "")
+        # Skip ghost summaries re-hydrated from jetbox_summaries_proto.pb after local files were deleted
+        if (
+            app_dir in ("", "antigravity-cli")
+            and not locked
+            and not (CONVERSATIONS_DIR / f"{cid}.db").exists()
+            and not (BRAIN_DIR / cid).exists()
+        ):
+            continue
+
         ws = parse_workspace_uri(r["workspace_uris"] or "")
         if norm_filter:
             if not ws:
@@ -322,7 +335,6 @@ def fetch_sessions(
 
         status_str = str(r["status"] or "")
         not_idle = bool(r["not_fully_idle"])
-        locked = check_presence_lock(cid)
 
         results.append(
             SessionInfo(
@@ -397,6 +409,83 @@ def load_transcript_preview(conversation_id: str, max_messages: int = 8) -> list
     return messages[-max_messages:]
 
 
+def _read_varint(buf: bytes, idx: int) -> tuple[int, int]:
+    val = 0
+    shift = 0
+    while idx < len(buf):
+        b = buf[idx]
+        idx += 1
+        val |= (b & 0x7F) << shift
+        if not (b & 0x80):
+            return val, idx
+        shift += 7
+    raise ValueError("truncated varint")
+
+
+def _strip_jetbox_pb(remove_ids: set[str]) -> None:
+    """Remove deleted conversation_id entries from jetbox_summaries_proto.pb.
+
+    AGY mirrors conversation summaries in this protobuf map (top-level field 1,
+    wire type 2, sub-field 1 = conversation_id string). If not stripped here,
+    AGY re-hydrates deleted rows back into conversation_summaries.db on restart.
+    """
+    if not remove_ids or not JETBOX_PB_PATH.exists():
+        return
+    try:
+        raw = JETBOX_PB_PATH.read_bytes()
+    except OSError:
+        return
+
+    out = bytearray()
+    i = 0
+    n = len(raw)
+    changed = False
+    try:
+        while i < n:
+            start = i
+            tag, i = _read_varint(raw, i)
+            field_num = tag >> 3
+            wire_type = tag & 7
+            if wire_type == 0:
+                _, i = _read_varint(raw, i)
+                out.extend(raw[start:i])
+            elif wire_type == 1:
+                i += 8
+                out.extend(raw[start:i])
+            elif wire_type == 2:
+                length, i = _read_varint(raw, i)
+                payload_start = i
+                i += length
+                if i > n:
+                    return
+                drop = False
+                if field_num == 1 and length > 2 and raw[payload_start] == 0x0A:
+                    slen, sidx = _read_varint(raw, payload_start + 1)
+                    if sidx + slen <= i:
+                        cid = raw[sidx : sidx + slen].decode("utf-8", errors="ignore")
+                        if cid in remove_ids:
+                            drop = True
+                            changed = True
+                if not drop:
+                    out.extend(raw[start:i])
+            elif wire_type == 5:
+                i += 4
+                out.extend(raw[start:i])
+            else:
+                # Unknown wire type: abort safely without modifying file
+                return
+    except Exception:
+        return
+
+    if changed:
+        try:
+            tmp = JETBOX_PB_PATH.with_suffix(".pb.tmp")
+            tmp.write_bytes(bytes(out))
+            tmp.replace(JETBOX_PB_PATH)
+        except OSError:
+            pass
+
+
 def delete_sessions(conversation_ids: list[str]) -> tuple[list[str], list[tuple[str, str]]]:
     """Permanently delete sessions from AGY DB, disk artifacts, cache, and sidecar meta.
 
@@ -436,6 +525,9 @@ def delete_sessions(conversation_ids: list[str]) -> tuple[list[str], list[tuple[
         finally:
             if conn is not None:
                 conn.close()
+
+    # 1b. Strip entries from jetbox_summaries_proto.pb so AGY doesn't re-hydrate them
+    _strip_jetbox_pb(set(unique_ids))
 
     # 2. Remove per-conversation files & directories on disk
     for cid in unique_ids:

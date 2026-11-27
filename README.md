@@ -7,12 +7,18 @@
 ## 主要特色
 
 - **無縫快速切回 Manager**：在任何 `agy` session 視窗中**快速連按兩次左鍵 (`← ←`)**（或 `Alt+←` / `Ctrl+←`）即可立即切回 Session Manager，原本的 session 會在背景持續執行不中斷。
-- **即時狀態動畫**：直接唯讀整合 `agy` 原生的 `conversation_summaries.db` 與 `presence/*.lock`，即時呈現每個 session 的狀態：
+- **即時狀態動畫與權限提醒**：直接唯讀整合 `agy` 原生的 `conversation_summaries.db`、`presence/*.lock` 與即時 tmux 畫面偵測，呈現每個 session 的狀態：
+  - `⚠`（紅/黃閃爍 + `WAITING`）：正在等待使用者權限確認或輸入（置頂顯示，按 **`w`** 一鍵輪流跳轉處理）
   - `⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏`（青色動畫）：`RUNNING` 執行中
   - `◐◓◑◒`（黃色動畫）：背景任務 / Subagent 執行中 (`not_fully_idle`)
   - `●`（綠色）：已在背景開啟、待命中（按 `Enter` 秒切回去）
   - `◉`（紫色）：在其他終端機開啟中
   - `○`（灰色）：歷史紀錄（按 `Enter` 自動 `cd` 到原目錄並 `agy --conversation <id>` 恢復）
+- **跨 Session 協作（傳訊 / 廣播 / 上下文轉交）**：
+  - 按 **`m`** 可對單一或多選 sessions 傳送指令（背景執行中的視窗透過安全 bracketed paste 直接送入；歷史 session 透過背景 `agy --print=...` 執行）。
+  - 按 **`c`** 可自動摘要來源 session 的最近對話與 artifacts，於可編輯視窗中確認後轉交給目標 session。
+- **雙視窗並排監看 (`v`)**：多選 2 個 sessions 按 **`v`**（或單選按 **`v`** 挑選第二個 session）即可於同一 tmux 視窗左右並排檢視，支援取消並排拆回獨立視窗。
+- **Fork / Subagent 樹狀檢視 (`t`)**：按 **`t`** 切換父子對話樹狀檢視（顯示 `├─` / `└─` 階層與 subagent 標籤）。
 - **雙欄即時預覽**：右側面板自動解析 `transcript.jsonl` 顯示最近幾輪對話；尚未存檔的新視窗則即時擷取終端畫面預覽。
 - **標題與全文檢索**：按 `/` 即可同時過濾標題、Workspace 路徑與 SQLite FTS5 對話全文內容。
 - **單刪與多選批次刪除**：支援 `Space` 多選、`a` 全選，並透過下方訊息列二次按 `d` 確認後安全刪除（同步清理資料庫索引、`conversations/`、`brain/`、`annotations/`、`presence/`、快取與自訂標籤）。
@@ -96,6 +102,11 @@ rm -rf ~/.local/share/agy-session-manager
 | **`Space`** | 勾選 / 取消勾選目前 session（游標停留在原位） |
 | **`a`** | 全選目前列表所有 session（再按一次全部取消） |
 | **`d`** / **`Delete`** | 刪除目前游標項目（或全部已勾選項目）：下方顯示確認列，再按一次 **`d`** 確認、`Esc` 取消 |
+| **`m`** | 傳送訊息或廣播指令給目前項目（或全部已勾選 sessions），於背景 worker 執行不阻塞介面 |
+| **`c`** | 跨 Session 上下文轉交：自動整理來源摘要與 artifacts，可編輯後 `Ctrl+S` 轉交給目標 session |
+| **`w`** | 一鍵跳轉至正在等待權限確認 (`⚠`) 的 session（多個時依序輪跳） |
+| **`v`** | 雙視窗並排監看：多選 2 個直接左右並排，單選則開啟清單挑選第二個 session（已並排者可拆回獨立視窗） |
+| **`t`** | 切換 Fork / Subagent 樹狀檢視模式 |
 | **`n`** | 開啟新 `agy` session（可指定目錄與額外旗標如 `--mode plan`） |
 | **`k`** | 關閉目前游標對應的背景執行視窗（保留對話歷史紀錄） |
 | **`r`** | 重新命名 session（同步寫入 AGY 的 `annotations/<id>.pbtxt` 與 `conversation_summaries.db`；若視窗已開啟，重開後標題列即同步更新） |

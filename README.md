@@ -98,7 +98,7 @@ rm -rf ~/.local/share/agy-session-manager
 | **`d`** / **`Delete`** | 刪除目前游標項目（或全部已勾選項目）：下方顯示確認列，再按一次 **`d`** 確認、`Esc` 取消 |
 | **`n`** | 開啟新 `agy` session（可指定目錄與額外旗標如 `--mode plan`） |
 | **`k`** | 關閉目前游標對應的背景執行視窗（保留對話歷史紀錄） |
-| **`r`** | 重新命名 session（存於獨立 sidecar 設定檔，不修改原生 DB） |
+| **`r`** | 重新命名 session（同步寫入 AGY 的 `annotations/<id>.pbtxt` 與 `conversation_summaries.db`；若視窗已開啟，重開後標題列即同步更新） |
 | **`p`** | 釘選 / 取消釘選（`★` 置頂顯示） |
 | **`/`** | 開啟搜尋列（支援標題、目錄與 FTS5 全文檢索），`Esc` 清除並關閉 |
 | **`Tab`** | 切換「全部 Workspace / 僅當前啟動目錄」 |

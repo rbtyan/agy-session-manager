@@ -365,6 +365,7 @@ class AgySessionManagerApp(App):
         self.selected_ids: set[str] = set()
         self._pending_mode: Optional[str] = None  # "delete" | "quit" | None
         self._pending_delete_targets: list[data.SessionInfo] = []
+        self._rebuilding_list: bool = False
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="top-bar"):
@@ -416,6 +417,8 @@ class AgySessionManagerApp(App):
                     item.render_row(self.frame)
 
     def _poll_data(self) -> None:
+        if self._pending_mode is not None:
+            return
         self.launch_cwd = tmux_ctrl.get_launch_cwd()
         self._refresh_data(force=False)
 
@@ -496,58 +499,62 @@ class AgySessionManagerApp(App):
         lv = self.query_one("#session-list", ListView)
         selected_key = self._current_key()
 
-        lv.clear()
-        items: list[SessionListItem] = []
+        self._rebuilding_list = True
+        try:
+            lv.clear()
+            items: list[SessionListItem] = []
 
-        total_active = len(unlinked) + len(active_sessions)
-        if total_active > 0:
-            items.append(SessionListItem(key_id="__hdr_active", section_header=f"ACTIVE SESSIONS ({total_active})"))
-            for w in unlinked:
-                items.append(SessionListItem(key_id=f"win:{w.window_id}", unlinked_window=w))
-            for s in active_sessions:
-                items.append(
-                    SessionListItem(
-                        key_id=f"conv:{s.conversation_id}",
-                        session=s,
-                        selected=(s.conversation_id in self.selected_ids),
+            total_active = len(unlinked) + len(active_sessions)
+            if total_active > 0:
+                items.append(SessionListItem(key_id="__hdr_active", section_header=f"ACTIVE SESSIONS ({total_active})"))
+                for w in unlinked:
+                    items.append(SessionListItem(key_id=f"win:{w.window_id}", unlinked_window=w))
+                for s in active_sessions:
+                    items.append(
+                        SessionListItem(
+                            key_id=f"conv:{s.conversation_id}",
+                            session=s,
+                            selected=(s.conversation_id in self.selected_ids),
+                        )
                     )
-                )
 
-        if history_sessions:
-            items.append(SessionListItem(key_id="__hdr_history", section_header=f"HISTORY ({len(history_sessions)})"))
-            for s in history_sessions:
-                items.append(
-                    SessionListItem(
-                        key_id=f"conv:{s.conversation_id}",
-                        session=s,
-                        selected=(s.conversation_id in self.selected_ids),
+            if history_sessions:
+                items.append(SessionListItem(key_id="__hdr_history", section_header=f"HISTORY ({len(history_sessions)})"))
+                for s in history_sessions:
+                    items.append(
+                        SessionListItem(
+                            key_id=f"conv:{s.conversation_id}",
+                            session=s,
+                            selected=(s.conversation_id in self.selected_ids),
+                        )
                     )
-                )
 
-        if not items:
-            items.append(SessionListItem(key_id="__empty", section_header="No sessions found. Press 'n' to start one."))
+            if not items:
+                items.append(SessionListItem(key_id="__empty", section_header="No sessions found. Press 'n' to start one."))
 
-        for it in items:
-            lv.append(it)
+            for it in items:
+                lv.append(it)
 
-        # Restore selection
-        target_idx: Optional[int] = None
-        if selected_key:
-            for idx, it in enumerate(items):
-                if it.key_id == selected_key and not it.disabled:
-                    target_idx = idx
-                    break
-        if target_idx is None:
-            for idx, it in enumerate(items):
-                if not it.disabled:
-                    target_idx = idx
-                    break
+            # Restore selection
+            target_idx: Optional[int] = None
+            if selected_key:
+                for idx, it in enumerate(items):
+                    if it.key_id == selected_key and not it.disabled:
+                        target_idx = idx
+                        break
+            if target_idx is None:
+                for idx, it in enumerate(items):
+                    if not it.disabled:
+                        target_idx = idx
+                        break
 
-        if target_idx is not None:
-            lv.index = target_idx
-            self._render_preview(items[target_idx])
-        else:
-            self._render_preview(None)
+            if target_idx is not None:
+                lv.index = target_idx
+                self._render_preview(items[target_idx])
+            else:
+                self._render_preview(None)
+        finally:
+            self._rebuilding_list = False
 
     def _current_item(self) -> Optional[SessionListItem]:
         lv = self.query_one("#session-list", ListView)
@@ -562,7 +569,7 @@ class AgySessionManagerApp(App):
 
     @on(ListView.Highlighted, "#session-list")
     def _on_highlight(self, event: ListView.Highlighted) -> None:
-        if self._pending_mode is not None:
+        if not self._rebuilding_list and self._pending_mode is not None:
             self._clear_confirm()
         if isinstance(event.item, SessionListItem) and not event.item.disabled:
             self._render_preview(event.item)
@@ -630,6 +637,8 @@ class AgySessionManagerApp(App):
             body.update(Text(fallback, style="dim"))
 
     def action_open_selected(self) -> None:
+        if self._pending_mode is not None:
+            self._clear_confirm()
         it = self._current_item()
         if it is None:
             return
@@ -646,6 +655,9 @@ class AgySessionManagerApp(App):
             )
 
     def action_new_session(self) -> None:
+        if self._pending_mode is not None:
+            self._clear_confirm()
+
         def _after(res: Optional[tuple[str, str]]) -> None:
             if res is None:
                 return
@@ -693,6 +705,8 @@ class AgySessionManagerApp(App):
             self._refresh_data(force=True)
 
     def action_rename_selected(self) -> None:
+        if self._pending_mode is not None:
+            self._clear_confirm()
         it = self._current_item()
         if it is None or it.session is None:
             return
@@ -701,8 +715,18 @@ class AgySessionManagerApp(App):
         def _after(new_name: Optional[str]) -> None:
             if new_name is None:
                 return
-            data.set_alias(s.conversation_id, new_name)
+            synced = data.rename_session(s.conversation_id, new_name)
+            if s.tmux_window_id and new_name.strip():
+                tmux_ctrl.set_window_title(s.tmux_window_id, new_name.strip())
             self._refresh_data(force=True)
+            if synced and new_name.strip():
+                if s.is_live:
+                    self.notify(
+                        f'已更名為 "{new_name.strip()}"（已同步至 AGY；開啟中的視窗重開後生效）',
+                        severity="information",
+                    )
+                else:
+                    self.notify(f'已更名為 "{new_name.strip()}"', severity="information")
 
         self.push_screen(RenameModal(s.display_title), _after)
 
@@ -794,6 +818,8 @@ class AgySessionManagerApp(App):
         self._show_confirm("delete", msg, danger=True)
 
     def action_pin_selected(self) -> None:
+        if self._pending_mode is not None:
+            self._clear_confirm()
         it = self._current_item()
         if it is None or it.session is None:
             return
@@ -801,10 +827,14 @@ class AgySessionManagerApp(App):
         self._refresh_data(force=True)
 
     def action_toggle_scope(self) -> None:
+        if self._pending_mode is not None:
+            self._clear_confirm()
         self.all_workspaces = not self.all_workspaces
         self._refresh_data(force=True)
 
     def action_focus_search(self) -> None:
+        if self._pending_mode is not None:
+            self._clear_confirm()
         bar = self.query_one("#search-bar", Container)
         bar.add_class("visible")
         inp = self.query_one("#search-input", Input)

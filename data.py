@@ -184,6 +184,90 @@ def toggle_pin(conversation_id: str) -> bool:
     return is_pinned
 
 
+def _escape_pbtxt_string(s: str) -> str:
+    return (
+        s.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+        .replace("\t", "\\t")
+    )
+
+
+def _update_annotation_title(conversation_id: str, new_title: str) -> bool:
+    """Update or insert `title:"..."` in annotations/<cid>.pbtxt preserving other fields."""
+    ann_path = ANNOTATIONS_DIR / f"{conversation_id}.pbtxt"
+    escaped = _escape_pbtxt_string(new_title)
+    title_line = f'title:"{escaped}"'
+    try:
+        ANNOTATIONS_DIR.mkdir(parents=True, exist_ok=True)
+        if ann_path.exists():
+            content = ann_path.read_text(encoding="utf-8", errors="replace")
+            if re.search(r'(?m)^\s*title\s*:', content):
+                new_content = re.sub(
+                    r'(?m)^\s*title\s*:\s*"(?:\\.|[^"\\])*"',
+                    title_line,
+                    content,
+                    count=1,
+                )
+            else:
+                sep = "\n" if content and not content.endswith("\n") else ""
+                new_content = f"{content}{sep}{title_line}\n"
+        else:
+            new_content = f"{title_line}\n"
+        tmp = ann_path.with_suffix(".tmp")
+        tmp.write_text(new_content, encoding="utf-8")
+        tmp.replace(ann_path)
+        return True
+    except OSError:
+        return False
+
+
+def _update_db_title(conversation_id: str, new_title: str) -> bool:
+    """Update title in conversation_summaries.db (WAL-safe short transaction)."""
+    if not DB_PATH.exists():
+        return False
+    conn = None
+    try:
+        conn = sqlite3.connect(str(DB_PATH), timeout=5.0)
+        conn.execute("PRAGMA busy_timeout = 5000")
+        with conn:
+            conn.execute(
+                "UPDATE conversation_summaries SET title = ? WHERE conversation_id = ?",
+                (new_title, conversation_id),
+            )
+        return True
+    except sqlite3.Error:
+        return False
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def rename_session(conversation_id: str, new_name: str) -> bool:
+    """Rename a session in AGY (annotations + DB) and keep sidecar meta in sync.
+
+    Returns True if AGY's native storage was updated, False if only sidecar alias was saved.
+    """
+    cleaned = new_name.strip()
+    if not cleaned:
+        # Clear sidecar override only; do not wipe native AGY title to blank
+        set_alias(conversation_id, "")
+        return True
+
+    ann_ok = _update_annotation_title(conversation_id, cleaned)
+    db_ok = _update_db_title(conversation_id, cleaned)
+
+    if ann_ok and db_ok:
+        # Native storage is updated; clear sidecar alias so future /rename inside agy stays in sync
+        set_alias(conversation_id, "")
+        return True
+
+    # Fallback: store in sidecar alias so agym still displays the new name
+    set_alias(conversation_id, cleaned)
+    return False
+
+
 def set_alias(conversation_id: str, alias: str) -> None:
     meta = load_meta()
     aliases = dict(meta.get("aliases", {}))

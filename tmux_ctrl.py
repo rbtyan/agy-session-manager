@@ -123,7 +123,14 @@ def spawn_new_session(cwd: str, extra_args: str = "") -> bool:
     while f"new-{idx}" in existing:
         idx += 1
     wname = f"new-{idx}"
-    cmd = f"agy {extra_args}".strip() if extra_args.strip() else "agy"
+    if extra_args.strip():
+        try:
+            tokens = shlex.split(extra_args)
+            cmd = shlex.join(["agy", *tokens])
+        except ValueError:
+            cmd = f"agy {extra_args.strip()}"
+    else:
+        cmd = "agy"
 
     res = _run_tmux(
         "new-window",
@@ -152,6 +159,10 @@ def spawn_new_session(cwd: str, extra_args: str = "") -> bool:
 def kill_window(window_id: str) -> bool:
     res = _run_tmux("kill-window", "-t", window_id)
     return res.returncode == 0
+
+
+def set_window_title(window_id: str, title: str) -> None:
+    _run_tmux("set-option", "-w", "-t", window_id, "@agy_title", title)
 
 
 def capture_pane(window_id: str, lines: int = 35) -> str:

@@ -584,8 +584,10 @@ def build_handover_context(session: SessionInfo, max_messages: int = 6) -> str:
     elif session.preview.strip():
         lines.append(f"Preview: {session.preview.strip()[:300]}")
 
+    import i18n
+
     lines.append("")
-    lines.append("請根據以上來自另一個 session 的上下文繼續協助：")
+    lines.append(i18n.t("handover_prompt_footer"))
     return "\n".join(lines)
 
 

@@ -42,13 +42,22 @@ Shortcuts inside Session Manager:
   Space             Toggle multi-select on highlighted session
   a                 Select all / clear selection
   d / Delete        Delete highlighted (or multi-selected): press d again to confirm, Esc to cancel
+  m                 Send a message or broadcast to selected session(s)
+  c                 Cross-session context handover (editable summary)
+  w                 Jump to next session waiting for permission/confirmation (⚠)
+  v                 Side-by-side split view (select 2 sessions, or pick 2nd in modal)
+  t                 Toggle fork/subagent tree view
   n                 Launch a new agy session
   k                 Close an active background session window
-  r                 Rename session (custom display label)
+  r                 Rename session (synced to AGY annotations & DB)
   p                 Pin / unpin session
   /                 Search sessions (title, workspace, and FTS5 full-text)
   Tab               Toggle All Workspaces / Current Workspace
+  l                 Toggle UI language (English / Traditional Chinese; auto-detected by default)
   q                 Exit prompt: q = detach (keep running), k = close all & exit, Esc = cancel
+
+Environment:
+  AGYM_LANG=en|zh   Override auto-detected UI language
 EOF
     exit 0
     ;;
@@ -72,8 +81,10 @@ esac
 
 # Start dedicated tmux server with Session Manager in window 0 if not running
 if ! env -u TMUX tmux -L "$TMUX_SOCKET" has-session -t "$TMUX_SESSION" 2>/dev/null; then
+  LANG_PREFIX=""
+  [ -n "${AGYM_LANG:-}" ] && LANG_PREFIX="AGYM_LANG=$(printf '%q' "$AGYM_LANG") "
   env -u TMUX AGYM_APP_DIR="$APP_DIR" tmux -L "$TMUX_SOCKET" -f "$TMUX_CONF" new-session -d -s "$TMUX_SESSION" -n manager \
-    "AGYM_LAUNCH_CWD=$(printf '%q' "$LAUNCH_CWD") $(printf '%q' "$VENV_PY") $(printf '%q' "$APP_DIR/tui.py")"
+    "${LANG_PREFIX}AGYM_LAUNCH_CWD=$(printf '%q' "$LAUNCH_CWD") $(printf '%q' "$VENV_PY") $(printf '%q' "$APP_DIR/tui.py")"
   env -u TMUX tmux -L "$TMUX_SOCKET" set-environment -g AGYM_APP_DIR "$APP_DIR"
   env -u TMUX tmux -L "$TMUX_SOCKET" set-option -g @agym_launch_cwd "$LAUNCH_CWD"
 else

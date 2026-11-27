@@ -17,7 +17,9 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, ListItem, ListView, Static, TextArea
 
 import data
+import i18n
 import tmux_ctrl
+from i18n import t
 
 SPINNER_RUNNING = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 SPINNER_BG = ["◐", "◓", "◑", "◒"]
@@ -34,14 +36,14 @@ class NewSessionModal(ModalScreen[Optional[tuple[str, str]]]):
 
     def compose(self) -> ComposeResult:
         with Container(id="modal-box"):
-            yield Label("New AGY Session", classes="modal-title")
-            yield Label("Workspace directory:", classes="modal-label")
+            yield Label(t("modal_new_title"), classes="modal-title")
+            yield Label(t("modal_new_cwd"), classes="modal-label")
             yield Input(value=self.default_cwd, id="cwd-input", placeholder="/path/to/workspace")
-            yield Label("Extra agy flags (optional, e.g. --mode plan):", classes="modal-label")
+            yield Label(t("modal_new_args"), classes="modal-label")
             yield Input(value="", id="args-input", placeholder="--model ... --mode ...")
             with Horizontal(classes="modal-buttons"):
-                yield Button("Launch", variant="primary", id="launch-btn")
-                yield Button("Cancel", id="cancel-btn")
+                yield Button(t("btn_launch"), variant="primary", id="launch-btn")
+                yield Button(t("btn_cancel"), id="cancel-btn")
 
     def on_mount(self) -> None:
         self.query_one("#cwd-input", Input).focus()
@@ -75,11 +77,11 @@ class RenameModal(ModalScreen[Optional[str]]):
 
     def compose(self) -> ComposeResult:
         with Container(id="modal-box"):
-            yield Label("Rename Session (leave blank to reset)", classes="modal-title")
+            yield Label(t("modal_rename_title"), classes="modal-title")
             yield Input(value=self.current_name, id="rename-input")
             with Horizontal(classes="modal-buttons"):
-                yield Button("Save", variant="primary", id="save-btn")
-                yield Button("Cancel", id="cancel-btn")
+                yield Button(t("btn_save"), variant="primary", id="save-btn")
+                yield Button(t("btn_cancel"), id="cancel-btn")
 
     def on_mount(self) -> None:
         inp = self.query_one("#rename-input", Input)
@@ -114,16 +116,16 @@ class SendMessageModal(ModalScreen[Optional[str]]):
 
     def compose(self) -> ComposeResult:
         with Container(id="modal-box"):
-            yield Label("Send Message to Session", classes="modal-title")
+            yield Label(t("modal_msg_title"), classes="modal-title")
             yield Label(self.target_summary, classes="modal-label", markup=False)
             yield Input(
                 value=self.initial_text,
                 id="msg-input",
-                placeholder="輸入要傳送的指令或訊息... (Enter 送出 / Esc 取消)",
+                placeholder=t("modal_msg_placeholder"),
             )
             with Horizontal(classes="modal-buttons"):
-                yield Button("Send", variant="primary", id="send-btn")
-                yield Button("Cancel", id="cancel-btn")
+                yield Button(t("btn_send"), variant="primary", id="send-btn")
+                yield Button(t("btn_cancel"), id="cancel-btn")
 
     def on_mount(self) -> None:
         self.query_one("#msg-input", Input).focus()
@@ -152,11 +154,11 @@ class HandoverTargetItem(ListItem):
         super().__init__()
         self.session = session
         if session.tmux_window_id:
-            tag = "[#9ece6a](active)[/]"
+            tag = t("tag_active")
         elif session.is_externally_locked:
-            tag = "[#bb9af7](open externally)[/]"
+            tag = t("tag_external")
         else:
-            tag = "[dim](history)[/]"
+            tag = t("tag_history")
         ws = escape(data.shorten_path(session.workspace_path, 26))
         self._text = f"[bold]{escape(session.display_title)}[/] {tag} [dim]· {ws}[/]"
 
@@ -185,22 +187,22 @@ class HandoverModal(ModalScreen[Optional[tuple[str, str]]]):
 
     def compose(self) -> ComposeResult:
         with Container(id="handover-modal-box"):
-            yield Label("Cross-Session Context Handover", classes="modal-title")
+            yield Label(t("modal_handover_title"), classes="modal-title")
             yield Label(
-                f'From: "{self.source.display_title}" ({self.source.conversation_id[:8]})',
+                t("modal_handover_from", title=self.source.display_title, cid=self.source.conversation_id[:8]),
                 classes="modal-label",
                 markup=False,
             )
-            yield Label("Select target session (↑/↓):", classes="modal-label")
+            yield Label(t("modal_handover_pick"), classes="modal-label")
             yield ListView(
                 *[HandoverTargetItem(s) for s in self.targets],
                 id="handover-targets",
             )
-            yield Label("Handover message (editable, Ctrl+S to send):", classes="modal-label")
+            yield Label(t("modal_handover_edit"), classes="modal-label")
             yield TextArea(self.initial_context, id="handover-text")
             with Horizontal(classes="modal-buttons"):
-                yield Button("Send Handover (Ctrl+S)", variant="primary", id="handover-send-btn")
-                yield Button("Cancel (Esc)", id="cancel-btn")
+                yield Button(t("btn_send_handover"), variant="primary", id="handover-send-btn")
+                yield Button(t("btn_cancel_esc"), id="cancel-btn")
 
     def on_mount(self) -> None:
         lv = self.query_one("#handover-targets", ListView)
@@ -218,7 +220,7 @@ class HandoverModal(ModalScreen[Optional[tuple[str, str]]]):
             return
         text = self.query_one("#handover-text", TextArea).text.strip()
         if not text:
-            self.notify("轉交內容不可為空", severity="warning")
+            self.notify(t("notify_handover_empty"), severity="warning")
             return
         self.dismiss((cur.session.conversation_id, text))
 
@@ -269,16 +271,16 @@ class SplitTargetModal(ModalScreen[Optional[str]]):
             items.append(
                 SplitOptionItem(
                     "__unsplit__",
-                    "[bold #e0af68]⊟ 取消並排（將此 session 拆回獨立視窗）[/]",
+                    t("split_unsplit_opt"),
                 )
             )
         for s in self.targets:
             if s.tmux_window_id:
-                tag = "[#9ece6a](active)[/]"
+                tag = t("tag_active")
             elif s.is_externally_locked:
-                tag = "[#bb9af7](open externally)[/]"
+                tag = t("tag_external")
             else:
-                tag = "[dim](history)[/]"
+                tag = t("tag_history")
             ws = escape(data.shorten_path(s.workspace_path, 26))
             items.append(
                 SplitOptionItem(
@@ -287,17 +289,17 @@ class SplitTargetModal(ModalScreen[Optional[str]]):
                 )
             )
         with Container(id="split-modal-box"):
-            yield Label("Side-by-Side Split View (v)", classes="modal-title")
+            yield Label(t("modal_split_title"), classes="modal-title")
             yield Label(
-                f'Left pane: "{self.first.display_title}" ({self.first.conversation_id[:8]})',
+                t("modal_split_left", title=self.first.display_title, cid=self.first.conversation_id[:8]),
                 classes="modal-label",
                 markup=False,
             )
-            yield Label("Select right pane session (↑/↓ + Enter):", classes="modal-label")
+            yield Label(t("modal_split_pick"), classes="modal-label")
             yield ListView(*items, id="split-targets")
             with Horizontal(classes="modal-buttons"):
-                yield Button("Open Split", variant="primary", id="split-open-btn")
-                yield Button("Cancel (Esc)", id="cancel-btn")
+                yield Button(t("btn_open_split"), variant="primary", id="split-open-btn")
+                yield Button(t("btn_cancel_esc"), id="cancel-btn")
 
     def on_mount(self) -> None:
         lv = self.query_one("#split-targets", ListView)
@@ -637,6 +639,7 @@ class AgySessionManagerApp(App):
         Binding("p", "pin_selected", "Pin", show=True),
         Binding("slash", "focus_search", "Search", show=True),
         Binding("tab", "toggle_scope", "Scope", show=True, priority=True),
+        Binding("l", "toggle_lang", "Lang", show=True),
         Binding("q", "quit_prompt", "Quit", show=True),
         Binding("escape", "clear_search", "Clear", show=False),
     ]
@@ -662,9 +665,9 @@ class AgySessionManagerApp(App):
         with Horizontal(id="top-bar"):
             yield Static("◈ AGY Session Manager", id="brand")
             yield Static("", id="scope-badge")
-            yield Static("In session: ←← or Alt+← to return", id="hint-badge")
+            yield Static(t("top_hint"), id="hint-badge")
         with Container(id="search-bar"):
-            yield Input(placeholder="Search title, workspace, or full-text content... (Esc to close)", id="search-input")
+            yield Input(placeholder=t("search_placeholder"), id="search-input")
         with Horizontal(id="main-body"):
             with Vertical(id="left-pane"):
                 yield ListView(id="session-list")
@@ -673,26 +676,7 @@ class AgySessionManagerApp(App):
                 with VerticalScroll(id="preview-scroll"):
                     yield Static("", id="preview-body")
         yield Static("", id="confirm-bar", markup=True)
-        yield Static(
-            "[bold #7aa2f7]Enter[/] 開啟  "
-            "[bold #7aa2f7]Space[/] 多選  "
-            "[bold #7aa2f7]a[/] 全選  "
-            "[bold #f7768e]d[/] 刪除  "
-            "[bold #7aa2f7]m[/] 傳訊  "
-            "[bold #7aa2f7]c[/] 轉交  "
-            "[bold #f7768e]w[/] 跳權限  "
-            "[bold #7aa2f7]v[/] 並排  "
-            "[bold #7aa2f7]t[/] 樹狀  "
-            "[bold #7aa2f7]n[/] 新增  "
-            "[bold #7aa2f7]k[/] 關閉背景  "
-            "[bold #7aa2f7]r[/] 改名  "
-            "[bold #7aa2f7]p[/] 釘選  "
-            "[bold #7aa2f7]/[/] 搜尋  "
-            "[bold #7aa2f7]Tab[/] 切換範圍  "
-            "[bold #e0af68]q[/] 離開",
-            id="hotkey-bar",
-            markup=True,
-        )
+        yield Static(t("hotkey_bar"), id="hotkey-bar", markup=True)
 
     def on_mount(self) -> None:
         self.query_one("#search-input", Input).can_focus = False
@@ -725,17 +709,18 @@ class AgySessionManagerApp(App):
         unlinked_wait = sum(1 for w in self._active_windows if not w.conv_id and w.waiting_for_user)
         sess_wait = sum(1 for s in self._sessions if s.state_kind == "waiting")
         wait_cnt = unlinked_wait + sess_wait
-        wait_part = f"  [bold #f7768e]⚠ Waiting: {wait_cnt} (w)[/]" if wait_cnt > 0 else ""
-        tree_part = "  [bold #bb9af7]Tree[/]" if self.tree_view else ""
-        sel_part = f"  [bold #f7768e]Selected: {sel_cnt}[/]" if sel_cnt > 0 else ""
+        wait_part = f"  [bold #f7768e]{t('waiting_badge', n=wait_cnt)}[/]" if wait_cnt > 0 else ""
+        tree_part = f"  [bold #bb9af7]{t('tree_badge')}[/]" if self.tree_view else ""
+        sel_part = f"  [bold #f7768e]{t('selected_badge', n=sel_cnt)}[/]" if sel_cnt > 0 else ""
+        active_part = f"[dim]{t('active_count', n=active_cnt)}[/]"
         if self.all_workspaces:
             scope_el.update(
-                f"[bold #9ece6a]All Workspaces[/]  [dim]Active: {active_cnt}[/]{tree_part}{wait_part}{sel_part}"
+                f"[bold #9ece6a]{t('scope_all')}[/]  {active_part}{tree_part}{wait_part}{sel_part}"
             )
         else:
             short = data.shorten_path(self.launch_cwd, 28)
             scope_el.update(
-                f"[bold #7dcfff]Workspace: {escape(short)}[/]  [dim]Active: {active_cnt}[/]{tree_part}{wait_part}{sel_part}"
+                f"[bold #7dcfff]{escape(t('scope_ws', path=short))}[/]  {active_part}{tree_part}{wait_part}{sel_part}"
             )
 
     def _refresh_data(self, force: bool = False) -> None:
@@ -803,6 +788,7 @@ class AgySessionManagerApp(App):
                 ],
                 self.all_workspaces,
                 self.tree_view,
+                i18n.get_lang(),
                 self.search_query,
             )
         )
@@ -824,7 +810,7 @@ class AgySessionManagerApp(App):
                     items.append(
                         SessionListItem(
                             key_id="__hdr_unlinked",
-                            section_header=f"LIVE WINDOWS ({len(unlinked)})",
+                            section_header=t("sec_live_windows", n=len(unlinked)),
                         )
                     )
                     for w in unlinked:
@@ -836,7 +822,7 @@ class AgySessionManagerApp(App):
                     items.append(
                         SessionListItem(
                             key_id="__hdr_tree",
-                            section_header=f"SESSION TREE ({len(tree_rows)})",
+                            section_header=t("sec_tree", n=len(tree_rows)),
                         )
                     )
                     for s, prefix in tree_rows:
@@ -851,7 +837,7 @@ class AgySessionManagerApp(App):
             else:
                 total_active = len(unlinked) + len(active_sessions)
                 if total_active > 0:
-                    items.append(SessionListItem(key_id="__hdr_active", section_header=f"ACTIVE SESSIONS ({total_active})"))
+                    items.append(SessionListItem(key_id="__hdr_active", section_header=t("sec_active", n=total_active)))
                     for w in unlinked:
                         items.append(SessionListItem(key_id=f"win:{w.pane_id or w.window_id}", unlinked_window=w))
                     for s in active_sessions:
@@ -864,7 +850,7 @@ class AgySessionManagerApp(App):
                         )
 
                 if history_sessions:
-                    items.append(SessionListItem(key_id="__hdr_history", section_header=f"HISTORY ({len(history_sessions)})"))
+                    items.append(SessionListItem(key_id="__hdr_history", section_header=t("sec_history", n=len(history_sessions))))
                     for s in history_sessions:
                         items.append(
                             SessionListItem(
@@ -875,7 +861,7 @@ class AgySessionManagerApp(App):
                         )
 
             if not items:
-                items.append(SessionListItem(key_id="__empty", section_header="No sessions found. Press 'n' to start one."))
+                items.append(SessionListItem(key_id="__empty", section_header=t("empty_list")))
 
             for it in items:
                 lv.append(it)
@@ -928,7 +914,7 @@ class AgySessionManagerApp(App):
         body = self.query_one("#preview-body", Static)
 
         if item is None:
-            hdr.update("[dim]No session selected[/]")
+            hdr.update(t("preview_none"))
             body.update("")
             return
 
@@ -936,37 +922,41 @@ class AgySessionManagerApp(App):
             w = item.unlinked_window
             hdr.update(
                 f"[bold #7dcfff]{escape(w.title or w.window_name)}[/]\n"
-                f"[dim]Window:[/] {escape(w.window_name)}  "
-                f"[dim]Dir:[/] {escape(w.cwd)}\n"
-                f"[#9ece6a]● Live tmux session (press Enter to attach)[/]"
+                f"[dim]{t('lbl_window')}[/] {escape(w.window_name)}  "
+                f"[dim]{t('lbl_dir')}[/] {escape(w.cwd)}\n"
+                f"{t('preview_live_hint')}"
             )
             pane_text = tmux_ctrl.capture_pane(w.pane_id or w.window_id, lines=40)
-            body.update(Text(pane_text or "(empty screen)", style="dim"))
+            body.update(Text(pane_text or t("preview_empty_screen"), style="dim"))
             return
 
         s = item.session
         assert s is not None
         status_map = {
-            "waiting": "[bold #f7768e]⚠ WAITING FOR PERMISSION / INPUT[/]",
-            "running": "[bold #73daca]● RUNNING[/]",
-            "background": "[bold #e0af68]◐ BACKGROUND TASK[/]",
-            "active_idle": "[bold #9ece6a]● ACTIVE (in background)[/]",
-            "external_idle": "[bold #bb9af7]◉ OPEN IN ANOTHER TERMINAL[/]",
-            "history": "[dim]○ HISTORY[/]",
+            "waiting": t("status_waiting"),
+            "running": t("status_running"),
+            "background": t("status_background"),
+            "active_idle": t("status_active_idle"),
+            "external_idle": t("status_external_idle"),
+            "history": t("status_history"),
         }
         status_label = status_map.get(s.state_kind, s.status)
         rel = data.format_relative_time(s.last_modified_ts)
 
         parent_line = ""
         if s.parent_conversation_id:
-            agent_bit = f"  [dim]Agent:[/] [#bb9af7]{escape(s.agent_name)}[/]" if s.agent_name else ""
-            parent_line = f"\n[dim]Parent:[/] {escape(s.parent_conversation_id[:8])}{agent_bit}"
+            agent_bit = (
+                f"  [dim]{t('lbl_agent')}[/] [#bb9af7]{escape(s.agent_name)}[/]"
+                if s.agent_name
+                else ""
+            )
+            parent_line = f"\n[dim]{t('lbl_parent')}[/] {escape(s.parent_conversation_id[:8])}{agent_bit}"
 
         hdr.update(
             f"[bold #c0caf5]{escape(s.display_title)}[/]\n"
             f"{status_label}  [dim]·  {s.step_count} steps  ·  {rel}[/]\n"
-            f"[dim]Dir:[/] {escape(s.workspace_path or '(none)')}\n"
-            f"[dim]ID:[/]  {escape(s.conversation_id)}{parent_line}"
+            f"[dim]{t('lbl_dir')}[/] {escape(s.workspace_path or '(none)')}\n"
+            f"[dim]{t('lbl_id')}[/]  {escape(s.conversation_id)}{parent_line}"
         )
 
         if s.state_kind == "waiting" and s.tmux_window_id:
@@ -980,7 +970,7 @@ class AgySessionManagerApp(App):
             out = Text()
             for role, text in msgs:
                 if role == "USER":
-                    out.append("You\n", style="bold #7aa2f7")
+                    out.append(f"{t('lbl_you')}\n", style="bold #7aa2f7")
                     out.append(text + "\n\n", style="#c0caf5")
                 else:
                     out.append("AGY\n", style="bold #9ece6a")
@@ -988,9 +978,9 @@ class AgySessionManagerApp(App):
             body.update(out)
         elif s.tmux_window_id:
             pane_text = tmux_ctrl.capture_pane(s.tmux_pane_id or s.tmux_window_id, lines=40)
-            body.update(Text(pane_text or "(no transcript yet)", style="dim"))
+            body.update(Text(pane_text or t("preview_no_transcript"), style="dim"))
         else:
-            fallback = s.preview.strip() if s.preview else "(No transcript preview available)"
+            fallback = s.preview.strip() if s.preview else t("preview_no_preview")
             body.update(Text(fallback, style="dim"))
 
     def action_open_selected(self) -> None:
@@ -1037,15 +1027,15 @@ class AgySessionManagerApp(App):
                 return
 
         if target_unlinked is not None:
-            summary = f'Target: "{target_unlinked.title or target_unlinked.window_name}" (active tmux window)'
+            summary = t("msg_target_unlinked", title=target_unlinked.title or target_unlinked.window_name)
         elif len(targets_sessions) == 1:
             s = targets_sessions[0]
-            mode_str = "active tmux window" if s.tmux_window_id else "background agy -p"
-            summary = f'Target: "{s.display_title}" ({mode_str})'
+            mode_str = t("mode_tmux") if s.tmux_window_id else t("mode_bg")
+            summary = t("msg_target_one", title=s.display_title, mode=mode_str)
         else:
             live_n = sum(1 for s in targets_sessions if s.tmux_window_id)
             bg_n = len(targets_sessions) - live_n
-            summary = f"Broadcast to {len(targets_sessions)} sessions ({live_n} active tmux, {bg_n} background -p)"
+            summary = t("msg_target_broadcast", total=len(targets_sessions), live=live_n, bg=bg_n)
 
         target_cids = [s.conversation_id for s in targets_sessions]
         target_wid = (
@@ -1098,15 +1088,15 @@ class AgySessionManagerApp(App):
                     if ok_cnt > 0 or was_multi:
                         self._refresh_data(force=True)
                     if skipped_ext and not ok_cnt and not fail_cnt:
+                        self.notify(t("notify_msg_skipped_only", n=skipped_ext), severity="warning")
+                    elif fail_cnt or skipped_ext:
+                        extra = t("notify_msg_partial_ext", n=skipped_ext) if skipped_ext else ""
                         self.notify(
-                            f"略過 {skipped_ext} 個在其他終端開啟中的 session（請先在 agym 內開啟）",
+                            t("notify_msg_partial", ok=ok_cnt, fail=fail_cnt, extra=extra),
                             severity="warning",
                         )
-                    elif fail_cnt or skipped_ext:
-                        extra = f"，略過外部開啟 {skipped_ext} 個" if skipped_ext else ""
-                        self.notify(f"已送出 {ok_cnt} 個，失敗 {fail_cnt} 個{extra}", severity="warning")
                     else:
-                        self.notify(f"已送出訊息給 {ok_cnt} 個 session", severity="information")
+                        self.notify(t("notify_msg_sent", n=ok_cnt), severity="information")
 
                 self.call_from_thread(_finish)
 
@@ -1119,12 +1109,12 @@ class AgySessionManagerApp(App):
             self._clear_confirm()
         it = self._current_item()
         if it is None or it.session is None:
-            self.notify("請先選取一個已儲存的來源 session", severity="warning")
+            self.notify(t("notify_handover_need_saved"), severity="warning")
             return
         src = it.session
         targets = [s for s in self._sessions if s.conversation_id != src.conversation_id]
         if not targets:
-            self.notify("目前沒有其他可轉交的目標 session", severity="warning")
+            self.notify(t("notify_handover_no_target"), severity="warning")
             return
         targets.sort(key=lambda s: (not s.is_active_in_tmux, not s.pinned, -s.last_modified_ts))
 
@@ -1137,7 +1127,7 @@ class AgySessionManagerApp(App):
             by_id = {s.conversation_id: s for s in self._sessions}
             tgt = by_id.get(target_cid)
             if tgt is None:
-                self.notify("目標 session 已不存在", severity="error")
+                self.notify(t("notify_handover_missing"), severity="error")
                 return
             launch_cwd = self.launch_cwd
 
@@ -1160,15 +1150,12 @@ class AgySessionManagerApp(App):
 
                 def _finish() -> None:
                     if ext_skip:
-                        self.notify(
-                            f'"{tgt.display_title}" 正在其他終端開啟中，請先在 agym 內開啟後再轉交',
-                            severity="warning",
-                        )
+                        self.notify(t("notify_handover_ext", title=tgt.display_title), severity="warning")
                     elif ok:
                         self._refresh_data(force=True)
-                        self.notify(f'已將上下文轉交給 "{tgt.display_title}"', severity="information")
+                        self.notify(t("notify_handover_ok", title=tgt.display_title), severity="information")
                     else:
-                        self.notify(f'轉交給 "{tgt.display_title}" 失敗', severity="error")
+                        self.notify(t("notify_handover_fail", title=tgt.display_title), severity="error")
 
                 self.call_from_thread(_finish)
 
@@ -1213,26 +1200,17 @@ class AgySessionManagerApp(App):
             idx, s = waiting_other[0]
             lv.index = idx
             if s.is_externally_locked:
-                self.notify(
-                    f'"{s.display_title}" 正在其他終端等待確認',
-                    severity="warning",
-                )
+                self.notify(t("notify_waiting_ext", title=s.display_title), severity="warning")
             else:
-                self.notify(
-                    f'已定位到等待確認的 "{s.display_title}"（按 Enter 開啟）',
-                    severity="information",
-                )
+                self.notify(t("notify_waiting_located", title=s.display_title), severity="information")
             return
 
-        self.notify("目前沒有等待權限確認的 session", severity="information")
+        self.notify(t("notify_waiting_none"), severity="information")
 
     def _launch_split(self, first: data.SessionInfo, second: data.SessionInfo) -> None:
         for s in (first, second):
             if s.is_externally_locked and not s.tmux_window_id:
-                self.notify(
-                    f'"{s.display_title}" 正在其他終端開啟中，無法在 agym 內並排',
-                    severity="warning",
-                )
+                self.notify(t("notify_split_ext", title=s.display_title), severity="warning")
                 return
         ok = tmux_ctrl.open_split_view(
             (first.conversation_id, first.workspace_path or self.launch_cwd, first.display_title),
@@ -1242,7 +1220,7 @@ class AgySessionManagerApp(App):
             self.selected_ids.clear()
         self._refresh_data(force=True)
         if not ok:
-            self.notify("開啟並排視窗失敗", severity="error")
+            self.notify(t("notify_split_fail"), severity="error")
 
     def action_split_view(self) -> None:
         if self._pending_mode is not None:
@@ -1250,10 +1228,7 @@ class AgySessionManagerApp(App):
 
         by_id = {s.conversation_id: s for s in self._sessions}
         if len(self.selected_ids) > 2:
-            self.notify(
-                f"請剛好選取 2 個 session 進行並排（目前選取 {len(self.selected_ids)} 個）",
-                severity="warning",
-            )
+            self.notify(t("notify_split_need_two", n=len(self.selected_ids)), severity="warning")
             return
 
         if len(self.selected_ids) == 2:
@@ -1270,7 +1245,7 @@ class AgySessionManagerApp(App):
             first = it.session if it is not None else None
 
         if first is None:
-            self.notify("請先選取一個已儲存的 session", severity="warning")
+            self.notify(t("notify_split_need_saved"), severity="warning")
             return
 
         candidates = [s for s in self._sessions if s.conversation_id != first.conversation_id]
@@ -1278,7 +1253,7 @@ class AgySessionManagerApp(App):
         can_unsplit = first.tmux_window_panes > 1 and bool(first.tmux_pane_id)
 
         if not candidates and not can_unsplit:
-            self.notify("目前沒有其他可並排的 session", severity="warning")
+            self.notify(t("notify_split_no_target"), severity="warning")
             return
 
         def _after(choice: Optional[str]) -> None:
@@ -1287,15 +1262,15 @@ class AgySessionManagerApp(App):
             if choice == "__unsplit__":
                 if first.tmux_pane_id and tmux_ctrl.unsplit_pane(first.tmux_pane_id):
                     self._refresh_data(force=True)
-                    self.notify(f'已將 "{first.display_title}" 拆回獨立視窗', severity="information")
+                    self.notify(t("notify_unsplit_ok", title=first.display_title), severity="information")
                 else:
-                    self.notify("取消並排失敗", severity="error")
+                    self.notify(t("notify_unsplit_fail"), severity="error")
                 return
             fresh = {s.conversation_id: s for s in self._sessions}
             f_cur = fresh.get(first.conversation_id, first)
             s_cur = fresh.get(choice)
             if s_cur is None:
-                self.notify("目標 session 已不存在", severity="error")
+                self.notify(t("notify_target_missing"), severity="error")
                 return
             self._launch_split(f_cur, s_cur)
 
@@ -1377,12 +1352,9 @@ class AgySessionManagerApp(App):
             self._refresh_data(force=True)
             if synced and new_name.strip():
                 if s.is_live:
-                    self.notify(
-                        f'已更名為 "{new_name.strip()}"（已同步至 AGY；開啟中的視窗重開後生效）',
-                        severity="information",
-                    )
+                    self.notify(t("notify_renamed_live", name=new_name.strip()), severity="information")
                 else:
-                    self.notify(f'已更名為 "{new_name.strip()}"', severity="information")
+                    self.notify(t("notify_renamed", name=new_name.strip()), severity="information")
 
         self.push_screen(RenameModal(s.display_title), _after)
 
@@ -1433,12 +1405,12 @@ class AgySessionManagerApp(App):
             self._refresh_data(force=True)
             if failed:
                 self.notify(
-                    f"Deleted {len(deleted)}, failed {len(failed)}: {failed[0][1]}",
+                    t("notify_deleted_partial", deleted=len(deleted), failed=len(failed), err=failed[0][1]),
                     severity="error",
                 )
             else:
-                label = "session" if len(deleted) == 1 else "sessions"
-                self.notify(f"Deleted {len(deleted)} {label}.", severity="information")
+                msg = t("notify_deleted_one") if len(deleted) == 1 else t("notify_deleted_many", n=len(deleted))
+                self.notify(msg, severity="information")
             return
 
         if self.selected_ids:
@@ -1453,24 +1425,18 @@ class AgySessionManagerApp(App):
             if it is None:
                 return
             if it.session is None:
-                self.notify("Unsaved session window — press 'k' to close it.", severity="warning")
+                self.notify(t("notify_unsaved_delete"), severity="warning")
                 return
             targets = [it.session]
 
         self._pending_delete_targets = targets
-        has_live = any(s.is_live or s.state_kind in ("running", "background") for s in targets)
-        live_warn = " [bold #e0af68](includes active/running!)[/]" if has_live else ""
+        has_live = any(s.is_live or s.state_kind in ("waiting", "running", "background") for s in targets)
+        live_warn = t("confirm_live_warn") if has_live else ""
         if len(targets) == 1:
             title = escape(targets[0].display_title)
-            msg = (
-                f"[bold #f7768e]⚠ 確定刪除 \"{title}\" ({targets[0].conversation_id[:8]})？[/]{live_warn}  "
-                f"[bold #f7768e]\\[d][/] 確認刪除  [dim]\\[Esc] 取消[/]"
-            )
+            msg = t("confirm_delete_one", title=title, cid=targets[0].conversation_id[:8], warn=live_warn)
         else:
-            msg = (
-                f"[bold #f7768e]⚠ 確定刪除已選的 {len(targets)} 個 sessions？[/]{live_warn}  "
-                f"[bold #f7768e]\\[d][/] 確認刪除  [dim]\\[Esc] 取消[/]"
-            )
+            msg = t("confirm_delete_many", n=len(targets), warn=live_warn)
         self._show_confirm("delete", msg, danger=True)
 
     def action_pin_selected(self) -> None:
@@ -1534,19 +1500,23 @@ class AgySessionManagerApp(App):
     def _on_search_submit(self) -> None:
         self.query_one("#session-list", ListView).focus()
 
+    def action_toggle_lang(self) -> None:
+        if self._pending_mode is not None:
+            self._clear_confirm()
+        i18n.toggle_lang(persist=True)
+        self.query_one("#hint-badge", Static).update(t("top_hint"))
+        self.query_one("#hotkey-bar", Static).update(t("hotkey_bar"))
+        self.query_one("#search-input", Input).placeholder = t("search_placeholder")
+        self._refresh_data(force=True)
+        self.notify(t("notify_lang_switched"), severity="information")
+
     def action_quit_prompt(self) -> None:
         if self._pending_mode == "quit":
             self._clear_confirm()
             tmux_ctrl.detach_client()
             return
         active_cnt = len(self._active_windows)
-        msg = (
-            f"[bold #e0af68]離開 AGY Session Manager (背景執行中: {active_cnt})：[/]  "
-            f"[bold #9ece6a]\\[q][/] 保持背景執行 (detach)  "
-            f"[bold #f7768e]\\[k][/] 全部關閉並離開  "
-            f"[dim]\\[Esc] 取消[/]"
-        )
-        self._show_confirm("quit", msg, danger=False)
+        self._show_confirm("quit", t("confirm_quit", n=active_cnt), danger=False)
 
 
 def main() -> None:

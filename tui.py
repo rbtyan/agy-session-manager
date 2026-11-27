@@ -235,6 +235,98 @@ class HandoverModal(ModalScreen[Optional[tuple[str, str]]]):
         self.action_confirm_send()
 
 
+class SplitOptionItem(ListItem):
+    """Option row inside SplitTargetModal (either a session or an unsplit action)."""
+
+    def __init__(self, value: str, markup_text: str) -> None:
+        super().__init__()
+        self.value = value
+        self._text = markup_text
+
+    def compose(self) -> ComposeResult:
+        yield Static(self._text, markup=True)
+
+
+class SplitTargetModal(ModalScreen[Optional[str]]):
+    """Modal to pick the second session for side-by-side tmux split view."""
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+
+    def __init__(
+        self,
+        first: data.SessionInfo,
+        targets: list[data.SessionInfo],
+        can_unsplit: bool = False,
+    ) -> None:
+        super().__init__()
+        self.first = first
+        self.targets = targets
+        self.can_unsplit = can_unsplit
+
+    def compose(self) -> ComposeResult:
+        items: list[SplitOptionItem] = []
+        if self.can_unsplit:
+            items.append(
+                SplitOptionItem(
+                    "__unsplit__",
+                    "[bold #e0af68]⊟ 取消並排（將此 session 拆回獨立視窗）[/]",
+                )
+            )
+        for s in self.targets:
+            if s.tmux_window_id:
+                tag = "[#9ece6a](active)[/]"
+            elif s.is_externally_locked:
+                tag = "[#bb9af7](open externally)[/]"
+            else:
+                tag = "[dim](history)[/]"
+            ws = escape(data.shorten_path(s.workspace_path, 26))
+            items.append(
+                SplitOptionItem(
+                    s.conversation_id,
+                    f"[bold]{escape(s.display_title)}[/] {tag} [dim]· {ws}[/]",
+                )
+            )
+        with Container(id="split-modal-box"):
+            yield Label("Side-by-Side Split View (v)", classes="modal-title")
+            yield Label(
+                f'Left pane: "{self.first.display_title}" ({self.first.conversation_id[:8]})',
+                classes="modal-label",
+                markup=False,
+            )
+            yield Label("Select right pane session (↑/↓ + Enter):", classes="modal-label")
+            yield ListView(*items, id="split-targets")
+            with Horizontal(classes="modal-buttons"):
+                yield Button("Open Split", variant="primary", id="split-open-btn")
+                yield Button("Cancel (Esc)", id="cancel-btn")
+
+    def on_mount(self) -> None:
+        lv = self.query_one("#split-targets", ListView)
+        if lv.children:
+            lv.index = 0
+        lv.focus()
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    def _confirm(self) -> None:
+        lv = self.query_one("#split-targets", ListView)
+        cur = lv.highlighted_child
+        if isinstance(cur, SplitOptionItem):
+            self.dismiss(cur.value)
+
+    @on(ListView.Selected, "#split-targets")
+    def _on_pick(self) -> None:
+        self._confirm()
+
+    @on(Button.Pressed, "#split-open-btn")
+    def _on_btn(self) -> None:
+        self._confirm()
+
+    @on(Button.Pressed, "#cancel-btn")
+    def _cancel(self) -> None:
+        self.dismiss(None)
+
+
 class SessionListItem(ListItem):
     """Single row representing either an active tmux session or a history session."""
 
@@ -324,7 +416,8 @@ class SessionListItem(ListItem):
         title = escape(s.display_title)
         rel = data.format_relative_time(s.last_modified_ts)
         ws = escape(data.shorten_path(s.workspace_path, 32))
-        meta_bits = [b for b in [badge, rel, f"{s.step_count} steps", ws] if b]
+        split_tag = "[#7dcfff]split[/]" if s.tmux_window_panes > 1 else ""
+        meta_bits = [b for b in [badge, split_tag, rel, f"{s.step_count} steps", ws] if b]
         meta_line = " [dim]·[/] ".join(meta_bits)
         self._label.update(f"{chk}{icon} {pin}[bold]{title}[/]\n  [dim]{meta_line}[/]")
 
@@ -460,6 +553,23 @@ class AgySessionManagerApp(App):
         margin-top: 1;
         border: solid #292e42;
     }
+    #split-modal-box {
+        width: 78;
+        height: auto;
+        max-height: 85%;
+        background: #1f2335;
+        border: solid #7aa2f7;
+        padding: 1 2;
+    }
+    #split-targets {
+        height: 10;
+        background: #16161e;
+        border: solid #292e42;
+        margin-top: 1;
+    }
+    #split-targets > ListItem.-highlight {
+        background: #2e4070;
+    }
     .modal-title {
         text-style: bold;
         color: #7aa2f7;
@@ -511,6 +621,7 @@ class AgySessionManagerApp(App):
         Binding("m", "send_message", "Msg", show=True),
         Binding("c", "handover_context", "Handover", show=True),
         Binding("w", "jump_waiting", "Waiting", show=True),
+        Binding("v", "split_view", "Split", show=True),
         Binding("n", "new_session", "New", show=True),
         Binding("k", "kill_active", "Stop Bg", show=True),
         Binding("r", "rename_selected", "Rename", show=True),
@@ -560,6 +671,7 @@ class AgySessionManagerApp(App):
             "[bold #7aa2f7]m[/] 傳訊  "
             "[bold #7aa2f7]c[/] 轉交  "
             "[bold #f7768e]w[/] 跳權限  "
+            "[bold #7aa2f7]v[/] 並排  "
             "[bold #7aa2f7]n[/] 新增  "
             "[bold #7aa2f7]k[/] 關閉背景  "
             "[bold #7aa2f7]r[/] 改名  "
@@ -617,7 +729,7 @@ class AgySessionManagerApp(App):
     def _refresh_data(self, force: bool = False) -> None:
         windows = tmux_ctrl.list_session_windows()
         for w in windows:
-            w.waiting_for_user = tmux_ctrl.detect_waiting_prompt(w.window_id)
+            w.waiting_for_user = tmux_ctrl.detect_waiting_prompt(w.pane_id or w.window_id)
         win_by_cid = {w.conv_id: w for w in windows if w.conv_id}
         unlinked = [w for w in windows if not w.conv_id]
 
@@ -633,6 +745,8 @@ class AgySessionManagerApp(App):
             if w:
                 s.tmux_window_id = w.window_id
                 s.tmux_window_name = w.window_name
+                s.tmux_pane_id = w.pane_id or None
+                s.tmux_window_panes = w.window_panes
                 if w.waiting_for_user:
                     s.waiting_for_user = True
 
@@ -663,6 +777,8 @@ class AgySessionManagerApp(App):
                         s.not_fully_idle,
                         s.step_count,
                         s.tmux_window_id,
+                        s.tmux_pane_id,
+                        s.tmux_window_panes,
                         s.is_externally_locked,
                         s.waiting_for_user,
                         s.pinned,
@@ -694,7 +810,7 @@ class AgySessionManagerApp(App):
             if total_active > 0:
                 items.append(SessionListItem(key_id="__hdr_active", section_header=f"ACTIVE SESSIONS ({total_active})"))
                 for w in unlinked:
-                    items.append(SessionListItem(key_id=f"win:{w.window_id}", unlinked_window=w))
+                    items.append(SessionListItem(key_id=f"win:{w.pane_id or w.window_id}", unlinked_window=w))
                 for s in active_sessions:
                     items.append(
                         SessionListItem(
@@ -781,7 +897,7 @@ class AgySessionManagerApp(App):
                 f"[dim]Dir:[/] {escape(w.cwd)}\n"
                 f"[#9ece6a]● Live tmux session (press Enter to attach)[/]"
             )
-            pane_text = tmux_ctrl.capture_pane(w.window_id, lines=40)
+            pane_text = tmux_ctrl.capture_pane(w.pane_id or w.window_id, lines=40)
             body.update(Text(pane_text or "(empty screen)", style="dim"))
             return
 
@@ -806,7 +922,7 @@ class AgySessionManagerApp(App):
         )
 
         if s.state_kind == "waiting" and s.tmux_window_id:
-            pane_text = tmux_ctrl.capture_pane(s.tmux_window_id, lines=40)
+            pane_text = tmux_ctrl.capture_pane(s.tmux_pane_id or s.tmux_window_id, lines=40)
             if pane_text:
                 body.update(Text(pane_text, style="#f7768e"))
                 return
@@ -823,7 +939,7 @@ class AgySessionManagerApp(App):
                     out.append(text + "\n\n", style="#a9b1d6")
             body.update(out)
         elif s.tmux_window_id:
-            pane_text = tmux_ctrl.capture_pane(s.tmux_window_id, lines=40)
+            pane_text = tmux_ctrl.capture_pane(s.tmux_pane_id or s.tmux_window_id, lines=40)
             body.update(Text(pane_text or "(no transcript yet)", style="dim"))
         else:
             fallback = s.preview.strip() if s.preview else "(No transcript preview available)"
@@ -836,7 +952,7 @@ class AgySessionManagerApp(App):
         if it is None:
             return
         if it.unlinked_window is not None:
-            tmux_ctrl.select_window(it.unlinked_window.window_id)
+            tmux_ctrl.select_window(it.unlinked_window.window_id, it.unlinked_window.pane_id)
             return
         if it.session is not None:
             s = it.session
@@ -884,7 +1000,11 @@ class AgySessionManagerApp(App):
             summary = f"Broadcast to {len(targets_sessions)} sessions ({live_n} active tmux, {bg_n} background -p)"
 
         target_cids = [s.conversation_id for s in targets_sessions]
-        target_wid = target_unlinked.window_id if target_unlinked is not None else None
+        target_wid = (
+            (target_unlinked.pane_id or target_unlinked.window_id)
+            if target_unlinked is not None
+            else None
+        )
         was_multi = bool(self.selected_ids)
 
         def _after(msg: Optional[str]) -> None:
@@ -907,7 +1027,9 @@ class AgySessionManagerApp(App):
                 else:
                     for s in resolved_sessions:
                         if s.tmux_window_id:
-                            ok = tmux_ctrl.send_text_to_window(s.tmux_window_id, msg, submit=True)
+                            ok = tmux_ctrl.send_text_to_window(
+                                s.tmux_pane_id or s.tmux_window_id, msg, submit=True
+                            )
                         elif s.is_externally_locked:
                             skipped_ext += 1
                             continue
@@ -973,7 +1095,9 @@ class AgySessionManagerApp(App):
 
             def _worker() -> None:
                 if tgt.tmux_window_id:
-                    ok = tmux_ctrl.send_text_to_window(tgt.tmux_window_id, handover_text, submit=True)
+                    ok = tmux_ctrl.send_text_to_window(
+                        tgt.tmux_pane_id or tgt.tmux_window_id, handover_text, submit=True
+                    )
                     ext_skip = False
                 elif tgt.is_externally_locked:
                     ok = False
@@ -1008,7 +1132,7 @@ class AgySessionManagerApp(App):
         if self._pending_mode is not None:
             self._clear_confirm()
         lv = self.query_one("#session-list", ListView)
-        waiting_live: list[tuple[int, str, str]] = []  # (list_idx, window_id, title)
+        waiting_live: list[tuple[int, str, str, str]] = []  # (list_idx, window_id, pane_id, title)
         waiting_other: list[tuple[int, data.SessionInfo]] = []
 
         for idx, child in enumerate(lv.children):
@@ -1016,25 +1140,25 @@ class AgySessionManagerApp(App):
                 continue
             if child.unlinked_window is not None and child.unlinked_window.waiting_for_user:
                 w = child.unlinked_window
-                waiting_live.append((idx, w.window_id, w.title or w.window_name))
+                waiting_live.append((idx, w.window_id, w.pane_id, w.title or w.window_name))
             elif child.session is not None and child.session.state_kind == "waiting":
                 s = child.session
                 if s.tmux_window_id:
-                    waiting_live.append((idx, s.tmux_window_id, s.display_title))
+                    waiting_live.append((idx, s.tmux_window_id, s.tmux_pane_id or "", s.display_title))
                 else:
                     waiting_other.append((idx, s))
 
         if waiting_live:
             chosen = waiting_live[0]
             if len(waiting_live) > 1 and self._last_jumped_waiting_wid is not None:
-                wids = [e[1] for e in waiting_live]
-                if self._last_jumped_waiting_wid in wids:
-                    next_pos = (wids.index(self._last_jumped_waiting_wid) + 1) % len(waiting_live)
+                keys = [e[2] or e[1] for e in waiting_live]
+                if self._last_jumped_waiting_wid in keys:
+                    next_pos = (keys.index(self._last_jumped_waiting_wid) + 1) % len(waiting_live)
                     chosen = waiting_live[next_pos]
-            idx, wid, _title = chosen
-            self._last_jumped_waiting_wid = wid
+            idx, wid, pid, _title = chosen
+            self._last_jumped_waiting_wid = pid or wid
             lv.index = idx
-            tmux_ctrl.select_window(wid)
+            tmux_ctrl.select_window(wid, pid)
             return
 
         if waiting_other:
@@ -1053,6 +1177,81 @@ class AgySessionManagerApp(App):
             return
 
         self.notify("目前沒有等待權限確認的 session", severity="information")
+
+    def _launch_split(self, first: data.SessionInfo, second: data.SessionInfo) -> None:
+        for s in (first, second):
+            if s.is_externally_locked and not s.tmux_window_id:
+                self.notify(
+                    f'"{s.display_title}" 正在其他終端開啟中，無法在 agym 內並排',
+                    severity="warning",
+                )
+                return
+        ok = tmux_ctrl.open_split_view(
+            (first.conversation_id, first.workspace_path or self.launch_cwd, first.display_title),
+            (second.conversation_id, second.workspace_path or self.launch_cwd, second.display_title),
+        )
+        if self.selected_ids:
+            self.selected_ids.clear()
+        self._refresh_data(force=True)
+        if not ok:
+            self.notify("開啟並排視窗失敗", severity="error")
+
+    def action_split_view(self) -> None:
+        if self._pending_mode is not None:
+            self._clear_confirm()
+
+        by_id = {s.conversation_id: s for s in self._sessions}
+        if len(self.selected_ids) > 2:
+            self.notify(
+                f"請剛好選取 2 個 session 進行並排（目前選取 {len(self.selected_ids)} 個）",
+                severity="warning",
+            )
+            return
+
+        if len(self.selected_ids) == 2:
+            pair = [by_id[cid] for cid in self.selected_ids if cid in by_id]
+            if len(pair) == 2:
+                self._launch_split(pair[0], pair[1])
+                return
+
+        if len(self.selected_ids) == 1:
+            cid = next(iter(self.selected_ids))
+            first = by_id.get(cid)
+        else:
+            it = self._current_item()
+            first = it.session if it is not None else None
+
+        if first is None:
+            self.notify("請先選取一個已儲存的 session", severity="warning")
+            return
+
+        candidates = [s for s in self._sessions if s.conversation_id != first.conversation_id]
+        candidates.sort(key=lambda s: (not s.is_active_in_tmux, not s.pinned, -s.last_modified_ts))
+        can_unsplit = first.tmux_window_panes > 1 and bool(first.tmux_pane_id)
+
+        if not candidates and not can_unsplit:
+            self.notify("目前沒有其他可並排的 session", severity="warning")
+            return
+
+        def _after(choice: Optional[str]) -> None:
+            if not choice:
+                return
+            if choice == "__unsplit__":
+                if first.tmux_pane_id and tmux_ctrl.unsplit_pane(first.tmux_pane_id):
+                    self._refresh_data(force=True)
+                    self.notify(f'已將 "{first.display_title}" 拆回獨立視窗', severity="information")
+                else:
+                    self.notify("取消並排失敗", severity="error")
+                return
+            fresh = {s.conversation_id: s for s in self._sessions}
+            f_cur = fresh.get(first.conversation_id, first)
+            s_cur = fresh.get(choice)
+            if s_cur is None:
+                self.notify("目標 session 已不存在", severity="error")
+                return
+            self._launch_split(f_cur, s_cur)
+
+        self.push_screen(SplitTargetModal(first, candidates, can_unsplit=can_unsplit), _after)
 
     def action_new_session(self) -> None:
         if self._pending_mode is not None:
@@ -1096,12 +1295,15 @@ class AgySessionManagerApp(App):
         if it is None:
             return
         wid: Optional[str] = None
+        pid: str = ""
         if it.unlinked_window is not None:
             wid = it.unlinked_window.window_id
+            pid = it.unlinked_window.pane_id
         elif it.session is not None and it.session.tmux_window_id:
             wid = it.session.tmux_window_id
+            pid = it.session.tmux_pane_id or ""
         if wid:
-            tmux_ctrl.kill_window(wid)
+            tmux_ctrl.kill_window(wid, pid)
             self._refresh_data(force=True)
 
     def action_rename_selected(self) -> None:
@@ -1117,7 +1319,7 @@ class AgySessionManagerApp(App):
                 return
             synced = data.rename_session(s.conversation_id, new_name)
             if s.tmux_window_id and new_name.strip():
-                tmux_ctrl.set_window_title(s.tmux_window_id, new_name.strip())
+                tmux_ctrl.set_window_title(s.tmux_window_id, new_name.strip(), s.tmux_pane_id or "")
             self._refresh_data(force=True)
             if synced and new_name.strip():
                 if s.is_live:
@@ -1169,7 +1371,7 @@ class AgySessionManagerApp(App):
             self._clear_confirm()
             for s in targets:
                 if s.tmux_window_id:
-                    tmux_ctrl.kill_window(s.tmux_window_id)
+                    tmux_ctrl.kill_window(s.tmux_window_id, s.tmux_pane_id or "")
             cids = [s.conversation_id for s in targets]
             deleted, failed = data.delete_sessions(cids)
             for cid in deleted:

@@ -44,6 +44,8 @@ class SessionInfo:
     # Enriched runtime fields
     tmux_window_id: Optional[str] = None
     tmux_window_name: Optional[str] = None
+    tmux_pane_id: Optional[str] = None
+    tmux_window_panes: int = 1
     is_externally_locked: bool = False
     waiting_for_user: bool = False
     alias: Optional[str] = None

@@ -200,7 +200,7 @@ def send_text_to_window(window_id: str, text: str, submit: bool = True) -> bool:
 
     if submit:
         # Small pause lets the target TUI process bracketed paste before Enter
-        time.sleep(0.08)
+        time.sleep(0.15 if (len(text) > 200 or "\n" in text) else 0.08)
         enter_res = _run_tmux("send-keys", "-t", window_id, "Enter")
         return enter_res.returncode == 0
     return True

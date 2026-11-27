@@ -14,7 +14,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import Button, Input, Label, ListItem, ListView, Static
+from textual.widgets import Button, Input, Label, ListItem, ListView, Static, TextArea
 
 import data
 import tmux_ctrl
@@ -143,6 +143,96 @@ class SendMessageModal(ModalScreen[Optional[str]]):
     @on(Input.Submitted)
     def _submit(self) -> None:
         self._send()
+
+
+class HandoverTargetItem(ListItem):
+    """Target session option inside HandoverModal."""
+
+    def __init__(self, session: data.SessionInfo) -> None:
+        super().__init__()
+        self.session = session
+        if session.tmux_window_id:
+            tag = "[#9ece6a](active)[/]"
+        elif session.is_externally_locked:
+            tag = "[#bb9af7](open externally)[/]"
+        else:
+            tag = "[dim](history)[/]"
+        ws = escape(data.shorten_path(session.workspace_path, 26))
+        self._text = f"[bold]{escape(session.display_title)}[/] {tag} [dim]· {ws}[/]"
+
+    def compose(self) -> ComposeResult:
+        yield Static(self._text, markup=True)
+
+
+class HandoverModal(ModalScreen[Optional[tuple[str, str]]]):
+    """Modal to pick a target session and edit handover context before sending."""
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+        Binding("ctrl+s", "confirm_send", "Send", priority=True),
+    ]
+
+    def __init__(
+        self,
+        source: data.SessionInfo,
+        targets: list[data.SessionInfo],
+        initial_context: str,
+    ) -> None:
+        super().__init__()
+        self.source = source
+        self.targets = targets
+        self.initial_context = initial_context
+
+    def compose(self) -> ComposeResult:
+        with Container(id="handover-modal-box"):
+            yield Label("Cross-Session Context Handover", classes="modal-title")
+            yield Label(
+                f'From: "{self.source.display_title}" ({self.source.conversation_id[:8]})',
+                classes="modal-label",
+                markup=False,
+            )
+            yield Label("Select target session (↑/↓):", classes="modal-label")
+            yield ListView(
+                *[HandoverTargetItem(s) for s in self.targets],
+                id="handover-targets",
+            )
+            yield Label("Handover message (editable, Ctrl+S to send):", classes="modal-label")
+            yield TextArea(self.initial_context, id="handover-text")
+            with Horizontal(classes="modal-buttons"):
+                yield Button("Send Handover (Ctrl+S)", variant="primary", id="handover-send-btn")
+                yield Button("Cancel (Esc)", id="cancel-btn")
+
+    def on_mount(self) -> None:
+        lv = self.query_one("#handover-targets", ListView)
+        if self.targets:
+            lv.index = 0
+        lv.focus()
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    def action_confirm_send(self) -> None:
+        lv = self.query_one("#handover-targets", ListView)
+        cur = lv.highlighted_child
+        if not isinstance(cur, HandoverTargetItem):
+            return
+        text = self.query_one("#handover-text", TextArea).text.strip()
+        if not text:
+            self.notify("轉交內容不可為空", severity="warning")
+            return
+        self.dismiss((cur.session.conversation_id, text))
+
+    @on(ListView.Selected, "#handover-targets")
+    def _on_target_enter(self) -> None:
+        self.query_one("#handover-text", TextArea).focus()
+
+    @on(Button.Pressed, "#cancel-btn")
+    def _cancel(self) -> None:
+        self.dismiss(None)
+
+    @on(Button.Pressed, "#handover-send-btn")
+    def _send(self) -> None:
+        self.action_confirm_send()
 
 
 class SessionListItem(ListItem):
@@ -337,6 +427,28 @@ class AgySessionManagerApp(App):
         border: solid #7aa2f7;
         padding: 1 2;
     }
+    #handover-modal-box {
+        width: 86;
+        height: auto;
+        max-height: 90%;
+        background: #1f2335;
+        border: solid #7aa2f7;
+        padding: 1 2;
+    }
+    #handover-targets {
+        height: 7;
+        background: #16161e;
+        border: solid #292e42;
+        margin-top: 1;
+    }
+    #handover-targets > ListItem.-highlight {
+        background: #2e4070;
+    }
+    #handover-text {
+        height: 11;
+        margin-top: 1;
+        border: solid #292e42;
+    }
     .modal-title {
         text-style: bold;
         color: #7aa2f7;
@@ -386,6 +498,7 @@ class AgySessionManagerApp(App):
         Binding("d", "delete_sessions", "Delete", show=True),
         Binding("delete", "delete_sessions", "Delete", show=False),
         Binding("m", "send_message", "Msg", show=True),
+        Binding("c", "handover_context", "Handover", show=True),
         Binding("n", "new_session", "New", show=True),
         Binding("k", "kill_active", "Stop Bg", show=True),
         Binding("r", "rename_selected", "Rename", show=True),
@@ -432,6 +545,7 @@ class AgySessionManagerApp(App):
             "[bold #7aa2f7]a[/] 全選  "
             "[bold #f7768e]d[/] 刪除  "
             "[bold #7aa2f7]m[/] 傳訊  "
+            "[bold #7aa2f7]c[/] 轉交  "
             "[bold #7aa2f7]n[/] 新增  "
             "[bold #7aa2f7]k[/] 關閉背景  "
             "[bold #7aa2f7]r[/] 改名  "
@@ -796,6 +910,66 @@ class AgySessionManagerApp(App):
 
         self.push_screen(SendMessageModal(summary), _after)
 
+    def action_handover_context(self) -> None:
+        if self._pending_mode is not None:
+            self._clear_confirm()
+        it = self._current_item()
+        if it is None or it.session is None:
+            self.notify("請先選取一個已儲存的來源 session", severity="warning")
+            return
+        src = it.session
+        targets = [s for s in self._sessions if s.conversation_id != src.conversation_id]
+        if not targets:
+            self.notify("目前沒有其他可轉交的目標 session", severity="warning")
+            return
+        targets.sort(key=lambda s: (not s.is_active_in_tmux, not s.pinned, -s.last_modified_ts))
+
+        initial_ctx = data.build_handover_context(src, max_messages=6)
+
+        def _after(res: Optional[tuple[str, str]]) -> None:
+            if res is None:
+                return
+            target_cid, handover_text = res
+            by_id = {s.conversation_id: s for s in self._sessions}
+            tgt = by_id.get(target_cid)
+            if tgt is None:
+                self.notify("目標 session 已不存在", severity="error")
+                return
+            launch_cwd = self.launch_cwd
+
+            def _worker() -> None:
+                if tgt.tmux_window_id:
+                    ok = tmux_ctrl.send_text_to_window(tgt.tmux_window_id, handover_text, submit=True)
+                    ext_skip = False
+                elif tgt.is_externally_locked:
+                    ok = False
+                    ext_skip = True
+                else:
+                    ok = tmux_ctrl.send_background_prompt(
+                        tgt.conversation_id,
+                        tgt.workspace_path or launch_cwd,
+                        handover_text,
+                    )
+                    ext_skip = False
+
+                def _finish() -> None:
+                    if ext_skip:
+                        self.notify(
+                            f'"{tgt.display_title}" 正在其他終端開啟中，請先在 agym 內開啟後再轉交',
+                            severity="warning",
+                        )
+                    elif ok:
+                        self._refresh_data(force=True)
+                        self.notify(f'已將上下文轉交給 "{tgt.display_title}"', severity="information")
+                    else:
+                        self.notify(f'轉交給 "{tgt.display_title}" 失敗', severity="error")
+
+                self.call_from_thread(_finish)
+
+            self.run_worker(_worker, thread=True)
+
+        self.push_screen(HandoverModal(src, targets, initial_ctx), _after)
+
     def action_new_session(self) -> None:
         if self._pending_mode is not None:
             self._clear_confirm()
@@ -967,6 +1141,11 @@ class AgySessionManagerApp(App):
             return
         data.toggle_pin(it.session.conversation_id)
         self._refresh_data(force=True)
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        if action == "toggle_scope" and len(self.screen_stack) > 1:
+            return False
+        return True
 
     def action_toggle_scope(self) -> None:
         if self._pending_mode is not None:

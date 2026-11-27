@@ -493,6 +493,45 @@ def load_transcript_preview(conversation_id: str, max_messages: int = 8) -> list
     return messages[-max_messages:]
 
 
+def build_handover_context(session: SessionInfo, max_messages: int = 6) -> str:
+    """Build a concise cross-session handover summary from transcript & artifacts."""
+    safe_title = " ".join(session.display_title.split())
+    lines = [
+        f'[Context from AGY Session: "{safe_title}" ({session.conversation_id[:8]})]',
+    ]
+    if session.workspace_path:
+        lines.append(f"Workspace: {session.workspace_path}")
+
+    brain_dir = BRAIN_DIR / session.conversation_id
+    if brain_dir.is_dir():
+        try:
+            artifacts = [
+                str(p)
+                for p in sorted(brain_dir.iterdir())
+                if p.is_file() and not p.name.startswith(".")
+            ][:5]
+            if artifacts:
+                lines.append("Artifacts: " + ", ".join(artifacts))
+        except OSError:
+            pass
+
+    msgs = load_transcript_preview(session.conversation_id, max_messages=max_messages)
+    if msgs:
+        lines.append("Recent conversation:")
+        for role, text in msgs:
+            compact = " ".join(text.split())
+            if len(compact) > 260:
+                compact = compact[:257] + "..."
+            label = "User" if role == "USER" else "AGY"
+            lines.append(f"- {label}: {compact}")
+    elif session.preview.strip():
+        lines.append(f"Preview: {session.preview.strip()[:300]}")
+
+    lines.append("")
+    lines.append("請根據以上來自另一個 session 的上下文繼續協助：")
+    return "\n".join(lines)
+
+
 def _read_varint(buf: bytes, idx: int) -> tuple[int, int]:
     val = 0
     shift = 0

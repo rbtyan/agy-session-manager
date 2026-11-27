@@ -102,6 +102,49 @@ class RenameModal(ModalScreen[Optional[str]]):
         self._save()
 
 
+class SendMessageModal(ModalScreen[Optional[str]]):
+    """Modal to send a message to one or more sessions."""
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+
+    def __init__(self, target_summary: str, initial_text: str = "") -> None:
+        super().__init__()
+        self.target_summary = target_summary
+        self.initial_text = initial_text
+
+    def compose(self) -> ComposeResult:
+        with Container(id="modal-box"):
+            yield Label("Send Message to Session", classes="modal-title")
+            yield Label(self.target_summary, classes="modal-label", markup=False)
+            yield Input(
+                value=self.initial_text,
+                id="msg-input",
+                placeholder="輸入要傳送的指令或訊息... (Enter 送出 / Esc 取消)",
+            )
+            with Horizontal(classes="modal-buttons"):
+                yield Button("Send", variant="primary", id="send-btn")
+                yield Button("Cancel", id="cancel-btn")
+
+    def on_mount(self) -> None:
+        self.query_one("#msg-input", Input).focus()
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    @on(Button.Pressed, "#cancel-btn")
+    def _cancel(self) -> None:
+        self.dismiss(None)
+
+    @on(Button.Pressed, "#send-btn")
+    def _send(self) -> None:
+        val = self.query_one("#msg-input", Input).value.strip()
+        self.dismiss(val if val else None)
+
+    @on(Input.Submitted)
+    def _submit(self) -> None:
+        self._send()
+
+
 class SessionListItem(ListItem):
     """Single row representing either an active tmux session or a history session."""
 
@@ -342,6 +385,7 @@ class AgySessionManagerApp(App):
         Binding("a", "toggle_select_all", "All", show=True),
         Binding("d", "delete_sessions", "Delete", show=True),
         Binding("delete", "delete_sessions", "Delete", show=False),
+        Binding("m", "send_message", "Msg", show=True),
         Binding("n", "new_session", "New", show=True),
         Binding("k", "kill_active", "Stop Bg", show=True),
         Binding("r", "rename_selected", "Rename", show=True),
@@ -387,6 +431,7 @@ class AgySessionManagerApp(App):
             "[bold #7aa2f7]Space[/] 多選  "
             "[bold #7aa2f7]a[/] 全選  "
             "[bold #f7768e]d[/] 刪除  "
+            "[bold #7aa2f7]m[/] 傳訊  "
             "[bold #7aa2f7]n[/] 新增  "
             "[bold #7aa2f7]k[/] 關閉背景  "
             "[bold #7aa2f7]r[/] 改名  "
@@ -653,6 +698,103 @@ class AgySessionManagerApp(App):
                 cwd=cwd,
                 title=s.display_title,
             )
+
+    def action_send_message(self) -> None:
+        if self._pending_mode is not None:
+            self._clear_confirm()
+
+        targets_sessions: list[data.SessionInfo] = []
+        target_unlinked: Optional[tmux_ctrl.TmuxSessionWindow] = None
+
+        if self.selected_ids:
+            by_id = {s.conversation_id: s for s in self._sessions}
+            targets_sessions = [by_id[cid] for cid in self.selected_ids if cid in by_id]
+            if not targets_sessions:
+                self.selected_ids.clear()
+                self._update_top_bar()
+                return
+        else:
+            it = self._current_item()
+            if it is None:
+                return
+            if it.unlinked_window is not None:
+                target_unlinked = it.unlinked_window
+            elif it.session is not None:
+                targets_sessions = [it.session]
+            else:
+                return
+
+        if target_unlinked is not None:
+            summary = f'Target: "{target_unlinked.title or target_unlinked.window_name}" (active tmux window)'
+        elif len(targets_sessions) == 1:
+            s = targets_sessions[0]
+            mode_str = "active tmux window" if s.tmux_window_id else "background agy -p"
+            summary = f'Target: "{s.display_title}" ({mode_str})'
+        else:
+            live_n = sum(1 for s in targets_sessions if s.tmux_window_id)
+            bg_n = len(targets_sessions) - live_n
+            summary = f"Broadcast to {len(targets_sessions)} sessions ({live_n} active tmux, {bg_n} background -p)"
+
+        target_cids = [s.conversation_id for s in targets_sessions]
+        target_wid = target_unlinked.window_id if target_unlinked is not None else None
+        was_multi = bool(self.selected_ids)
+
+        def _after(msg: Optional[str]) -> None:
+            if not msg:
+                return
+            # Re-resolve fresh state at send time so targets are never stale
+            by_id = {s.conversation_id: s for s in self._sessions}
+            resolved_sessions = [by_id[cid] for cid in target_cids if cid in by_id]
+            launch_cwd = self.launch_cwd
+
+            def _worker() -> None:
+                ok_cnt = 0
+                fail_cnt = 0
+                skipped_ext = 0
+                if target_wid is not None:
+                    if tmux_ctrl.send_text_to_window(target_wid, msg, submit=True):
+                        ok_cnt += 1
+                    else:
+                        fail_cnt += 1
+                else:
+                    for s in resolved_sessions:
+                        if s.tmux_window_id:
+                            ok = tmux_ctrl.send_text_to_window(s.tmux_window_id, msg, submit=True)
+                        elif s.is_externally_locked:
+                            skipped_ext += 1
+                            continue
+                        else:
+                            ok = tmux_ctrl.send_background_prompt(
+                                s.conversation_id,
+                                s.workspace_path or launch_cwd,
+                                msg,
+                            )
+                        if ok:
+                            ok_cnt += 1
+                        else:
+                            fail_cnt += 1
+
+                def _finish() -> None:
+                    if was_multi and self.selected_ids:
+                        self.selected_ids.clear()
+                    if ok_cnt > 0 or was_multi:
+                        self._refresh_data(force=True)
+                    if skipped_ext and not ok_cnt and not fail_cnt:
+                        self.notify(
+                            f"略過 {skipped_ext} 個在其他終端開啟中的 session（請先在 agym 內開啟）",
+                            severity="warning",
+                        )
+                    elif fail_cnt or skipped_ext:
+                        extra = f"，略過外部開啟 {skipped_ext} 個" if skipped_ext else ""
+                        self.notify(f"已送出 {ok_cnt} 個，失敗 {fail_cnt} 個{extra}", severity="warning")
+                    else:
+                        self.notify(f"已送出訊息給 {ok_cnt} 個 session", severity="information")
+
+                self.call_from_thread(_finish)
+
+            self.run_worker(_worker, thread=True)
+
+        self.push_screen(SendMessageModal(summary), _after)
 
     def action_new_session(self) -> None:
         if self._pending_mode is not None:

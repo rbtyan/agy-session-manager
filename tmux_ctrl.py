@@ -6,6 +6,9 @@ import dataclasses
 import os
 import shlex
 import subprocess
+import threading
+import time
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -163,6 +166,67 @@ def kill_window(window_id: str) -> bool:
 
 def set_window_title(window_id: str, title: str) -> None:
     _run_tmux("set-option", "-w", "-t", window_id, "@agy_title", title)
+
+
+def send_text_to_window(window_id: str, text: str, submit: bool = True) -> bool:
+    """Deliver text into a live agy tmux window safely using bracketed paste."""
+    if not text or not text.strip():
+        return False
+    # Exit tmux copy-mode if the target pane is currently scrolled back
+    _run_tmux("send-keys", "-t", window_id, "-X", "cancel")
+
+    buf_name = f"agym_msg_{uuid.uuid4().hex[:8]}"
+    env = os.environ.copy()
+    env.pop("TMUX", None)
+    try:
+        load_res = subprocess.run(
+            ["tmux", "-L", TMUX_SOCKET, "load-buffer", "-b", buf_name, "-"],
+            input=text,
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=3,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if load_res.returncode != 0:
+        return False
+
+    paste_res = _run_tmux("paste-buffer", "-p", "-r", "-d", "-b", buf_name, "-t", window_id)
+    if paste_res.returncode != 0:
+        _run_tmux("delete-buffer", "-b", buf_name)
+        return False
+
+    if submit:
+        # Small pause lets the target TUI process bracketed paste before Enter
+        time.sleep(0.08)
+        enter_res = _run_tmux("send-keys", "-t", window_id, "Enter")
+        return enter_res.returncode == 0
+    return True
+
+
+def send_background_prompt(conversation_id: str, cwd: str, text: str) -> bool:
+    """Run a single non-interactive turn on a history session in the background."""
+    if not conversation_id or not text or not text.strip():
+        return False
+    target_cwd = cwd if (cwd and Path(cwd).is_dir()) else str(Path.home())
+    env = os.environ.copy()
+    env.pop("TMUX", None)
+    try:
+        proc = subprocess.Popen(
+            ["agy", "--conversation", conversation_id, f"--print={text}"],
+            cwd=target_cwd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=env,
+            start_new_session=True,
+        )
+        threading.Thread(target=proc.wait, daemon=True).start()
+        return True
+    except OSError:
+        return False
 
 
 def capture_pane(window_id: str, lines: int = 35) -> str:

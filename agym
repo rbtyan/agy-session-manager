@@ -34,8 +34,8 @@ Usage:
   agym -h, --help   Show this help
 
 Shortcuts inside an agy session:
-  ← ← (double-tap)  Return to Session Manager
-  Alt+← / Ctrl+←    Return to Session Manager (instant)
+  ← (empty input)   Return to Session Manager (passes through normally when typing)
+  Alt+← / Ctrl+←    Return to Session Manager (instant, anytime)
 
 Shortcuts inside Session Manager:
   Enter             Open / resume / switch to selected session

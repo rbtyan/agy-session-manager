@@ -347,7 +347,7 @@ class AgySessionManagerApp(App):
         Binding("r", "rename_selected", "Rename", show=True),
         Binding("p", "pin_selected", "Pin", show=True),
         Binding("slash", "focus_search", "Search", show=True),
-        Binding("tab", "toggle_scope", "Scope", show=True),
+        Binding("tab", "toggle_scope", "Scope", show=True, priority=True),
         Binding("q", "quit_prompt", "Quit", show=True),
         Binding("escape", "clear_search", "Clear", show=False),
     ]

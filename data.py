@@ -365,6 +365,14 @@ def fetch_sessions(
     if q_lower:
         fts_ids = search_fts_ids(q_lower)
 
+    parent_map: dict[str, str] = {}
+    try:
+        for pr in conn.execute("SELECT conversation_id, parent_id FROM conversation_parents").fetchall():
+            if pr["conversation_id"] and pr["parent_id"]:
+                parent_map[str(pr["conversation_id"])] = str(pr["parent_id"])
+    except sqlite3.Error:
+        pass
+
     try:
         rows = conn.execute(
             """
@@ -436,7 +444,7 @@ def fetch_sessions(
                 workspace_path=ws,
                 status=status_str,
                 not_fully_idle=not_idle,
-                parent_conversation_id=str(r["parent_conversation_id"] or ""),
+                parent_conversation_id=str(r["parent_conversation_id"] or "") or parent_map.get(cid, ""),
                 agent_name=str(r["agent_name"] or ""),
                 is_externally_locked=locked,
                 waiting_for_user=("WAITING" in status_str),
@@ -446,6 +454,49 @@ def fetch_sessions(
         )
 
     return results
+
+
+def build_session_tree(sessions: list[SessionInfo]) -> list[tuple[SessionInfo, str]]:
+    """Order sessions into a parent->child tree with box-drawing prefixes.
+
+    Orphans (whose parent is not in `sessions`) are treated as roots, and cycles
+    are broken safely so every input session appears exactly once.
+    """
+    by_id = {s.conversation_id: s for s in sessions}
+    children: dict[str, list[SessionInfo]] = {}
+    roots: list[SessionInfo] = []
+
+    for s in sessions:
+        pid = s.parent_conversation_id
+        if pid and pid in by_id and pid != s.conversation_id:
+            children.setdefault(pid, []).append(s)
+        else:
+            roots.append(s)
+
+    ordered: list[tuple[SessionInfo, str]] = []
+    visited: set[str] = set()
+
+    def _visit(node: SessionInfo, prefix: str, child_indent: str) -> None:
+        if node.conversation_id in visited:
+            return
+        visited.add(node.conversation_id)
+        ordered.append((node, prefix))
+        kids = [c for c in children.get(node.conversation_id, []) if c.conversation_id not in visited]
+        for idx, kid in enumerate(kids):
+            is_last = idx == len(kids) - 1
+            branch = "└─ " if is_last else "├─ "
+            next_indent = child_indent + ("   " if is_last else "│  ")
+            _visit(kid, child_indent + branch, next_indent)
+
+    for root in roots:
+        _visit(root, "", "")
+
+    # Any remaining nodes involved in a parent cycle become roots
+    for s in sessions:
+        if s.conversation_id not in visited:
+            _visit(s, "", "")
+
+    return ordered
 
 
 def load_transcript_preview(conversation_id: str, max_messages: int = 8) -> list[tuple[str, str]]:

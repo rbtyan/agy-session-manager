@@ -337,6 +337,7 @@ class SessionListItem(ListItem):
         unlinked_window: Optional[tmux_ctrl.TmuxSessionWindow] = None,
         section_header: Optional[str] = None,
         selected: bool = False,
+        tree_prefix: str = "",
     ) -> None:
         super().__init__()
         self.key_id = key_id
@@ -344,6 +345,7 @@ class SessionListItem(ListItem):
         self.unlinked_window = unlinked_window
         self.section_header = section_header
         self.is_multi_selected = selected
+        self.tree_prefix = tree_prefix
         if section_header is not None:
             self.disabled = True
             self.add_class("section-row")
@@ -414,12 +416,18 @@ class SessionListItem(ListItem):
         chk = "[bold #f7768e]\\[✓][/] " if self.is_multi_selected else ""
         pin = "[bold #e0af68]★ [/]" if s.pinned else ""
         title = escape(s.display_title)
+        agent_tag = f" [dim #bb9af7]({escape(s.agent_name)})[/]" if s.agent_name else ""
+        prefix_str = f"[dim #565f89]{escape(self.tree_prefix)}[/]" if self.tree_prefix else ""
+        sub_indent = " " * len(self.tree_prefix)
         rel = data.format_relative_time(s.last_modified_ts)
         ws = escape(data.shorten_path(s.workspace_path, 32))
         split_tag = "[#7dcfff]split[/]" if s.tmux_window_panes > 1 else ""
         meta_bits = [b for b in [badge, split_tag, rel, f"{s.step_count} steps", ws] if b]
         meta_line = " [dim]·[/] ".join(meta_bits)
-        self._label.update(f"{chk}{icon} {pin}[bold]{title}[/]\n  [dim]{meta_line}[/]")
+        self._label.update(
+            f"{chk}{prefix_str}{icon} {pin}[bold]{title}[/]{agent_tag}\n"
+            f"{sub_indent}  [dim]{meta_line}[/]"
+        )
 
 
 class AgySessionManagerApp(App):
@@ -622,6 +630,7 @@ class AgySessionManagerApp(App):
         Binding("c", "handover_context", "Handover", show=True),
         Binding("w", "jump_waiting", "Waiting", show=True),
         Binding("v", "split_view", "Split", show=True),
+        Binding("t", "toggle_tree", "Tree", show=True),
         Binding("n", "new_session", "New", show=True),
         Binding("k", "kill_active", "Stop Bg", show=True),
         Binding("r", "rename_selected", "Rename", show=True),
@@ -636,6 +645,7 @@ class AgySessionManagerApp(App):
         super().__init__()
         self.frame: int = 0
         self.all_workspaces: bool = True
+        self.tree_view: bool = False
         self.search_query: str = ""
         self.launch_cwd: str = tmux_ctrl.get_launch_cwd()
         self._last_signature: str = ""
@@ -672,6 +682,7 @@ class AgySessionManagerApp(App):
             "[bold #7aa2f7]c[/] 轉交  "
             "[bold #f7768e]w[/] 跳權限  "
             "[bold #7aa2f7]v[/] 並排  "
+            "[bold #7aa2f7]t[/] 樹狀  "
             "[bold #7aa2f7]n[/] 新增  "
             "[bold #7aa2f7]k[/] 關閉背景  "
             "[bold #7aa2f7]r[/] 改名  "
@@ -715,15 +726,16 @@ class AgySessionManagerApp(App):
         sess_wait = sum(1 for s in self._sessions if s.state_kind == "waiting")
         wait_cnt = unlinked_wait + sess_wait
         wait_part = f"  [bold #f7768e]⚠ Waiting: {wait_cnt} (w)[/]" if wait_cnt > 0 else ""
+        tree_part = "  [bold #bb9af7]Tree[/]" if self.tree_view else ""
         sel_part = f"  [bold #f7768e]Selected: {sel_cnt}[/]" if sel_cnt > 0 else ""
         if self.all_workspaces:
             scope_el.update(
-                f"[bold #9ece6a]All Workspaces[/]  [dim]Active: {active_cnt}[/]{wait_part}{sel_part}"
+                f"[bold #9ece6a]All Workspaces[/]  [dim]Active: {active_cnt}[/]{tree_part}{wait_part}{sel_part}"
             )
         else:
             short = data.shorten_path(self.launch_cwd, 28)
             scope_el.update(
-                f"[bold #7dcfff]Workspace: {escape(short)}[/]  [dim]Active: {active_cnt}[/]{wait_part}{sel_part}"
+                f"[bold #7dcfff]Workspace: {escape(short)}[/]  [dim]Active: {active_cnt}[/]{tree_part}{wait_part}{sel_part}"
             )
 
     def _refresh_data(self, force: bool = False) -> None:
@@ -790,6 +802,7 @@ class AgySessionManagerApp(App):
                     for s in history_sessions
                 ],
                 self.all_workspaces,
+                self.tree_view,
                 self.search_query,
             )
         )
@@ -806,30 +819,60 @@ class AgySessionManagerApp(App):
             lv.clear()
             items: list[SessionListItem] = []
 
-            total_active = len(unlinked) + len(active_sessions)
-            if total_active > 0:
-                items.append(SessionListItem(key_id="__hdr_active", section_header=f"ACTIVE SESSIONS ({total_active})"))
-                for w in unlinked:
-                    items.append(SessionListItem(key_id=f"win:{w.pane_id or w.window_id}", unlinked_window=w))
-                for s in active_sessions:
+            if self.tree_view:
+                if unlinked:
                     items.append(
                         SessionListItem(
-                            key_id=f"conv:{s.conversation_id}",
-                            session=s,
-                            selected=(s.conversation_id in self.selected_ids),
+                            key_id="__hdr_unlinked",
+                            section_header=f"LIVE WINDOWS ({len(unlinked)})",
                         )
                     )
+                    for w in unlinked:
+                        items.append(SessionListItem(key_id=f"win:{w.pane_id or w.window_id}", unlinked_window=w))
 
-            if history_sessions:
-                items.append(SessionListItem(key_id="__hdr_history", section_header=f"HISTORY ({len(history_sessions)})"))
-                for s in history_sessions:
+                combined = active_sessions + history_sessions
+                if combined:
+                    tree_rows = data.build_session_tree(combined)
                     items.append(
                         SessionListItem(
-                            key_id=f"conv:{s.conversation_id}",
-                            session=s,
-                            selected=(s.conversation_id in self.selected_ids),
+                            key_id="__hdr_tree",
+                            section_header=f"SESSION TREE ({len(tree_rows)})",
                         )
                     )
+                    for s, prefix in tree_rows:
+                        items.append(
+                            SessionListItem(
+                                key_id=f"conv:{s.conversation_id}",
+                                session=s,
+                                selected=(s.conversation_id in self.selected_ids),
+                                tree_prefix=prefix,
+                            )
+                        )
+            else:
+                total_active = len(unlinked) + len(active_sessions)
+                if total_active > 0:
+                    items.append(SessionListItem(key_id="__hdr_active", section_header=f"ACTIVE SESSIONS ({total_active})"))
+                    for w in unlinked:
+                        items.append(SessionListItem(key_id=f"win:{w.pane_id or w.window_id}", unlinked_window=w))
+                    for s in active_sessions:
+                        items.append(
+                            SessionListItem(
+                                key_id=f"conv:{s.conversation_id}",
+                                session=s,
+                                selected=(s.conversation_id in self.selected_ids),
+                            )
+                        )
+
+                if history_sessions:
+                    items.append(SessionListItem(key_id="__hdr_history", section_header=f"HISTORY ({len(history_sessions)})"))
+                    for s in history_sessions:
+                        items.append(
+                            SessionListItem(
+                                key_id=f"conv:{s.conversation_id}",
+                                session=s,
+                                selected=(s.conversation_id in self.selected_ids),
+                            )
+                        )
 
             if not items:
                 items.append(SessionListItem(key_id="__empty", section_header="No sessions found. Press 'n' to start one."))
@@ -914,11 +957,16 @@ class AgySessionManagerApp(App):
         status_label = status_map.get(s.state_kind, s.status)
         rel = data.format_relative_time(s.last_modified_ts)
 
+        parent_line = ""
+        if s.parent_conversation_id:
+            agent_bit = f"  [dim]Agent:[/] [#bb9af7]{escape(s.agent_name)}[/]" if s.agent_name else ""
+            parent_line = f"\n[dim]Parent:[/] {escape(s.parent_conversation_id[:8])}{agent_bit}"
+
         hdr.update(
             f"[bold #c0caf5]{escape(s.display_title)}[/]\n"
             f"{status_label}  [dim]·  {s.step_count} steps  ·  {rel}[/]\n"
             f"[dim]Dir:[/] {escape(s.workspace_path or '(none)')}\n"
-            f"[dim]ID:[/]  {escape(s.conversation_id)}"
+            f"[dim]ID:[/]  {escape(s.conversation_id)}{parent_line}"
         )
 
         if s.state_kind == "waiting" and s.tmux_window_id:
@@ -1252,6 +1300,12 @@ class AgySessionManagerApp(App):
             self._launch_split(f_cur, s_cur)
 
         self.push_screen(SplitTargetModal(first, candidates, can_unsplit=can_unsplit), _after)
+
+    def action_toggle_tree(self) -> None:
+        if self._pending_mode is not None:
+            self._clear_confirm()
+        self.tree_view = not self.tree_view
+        self._refresh_data(force=True)
 
     def action_new_session(self) -> None:
         if self._pending_mode is not None:

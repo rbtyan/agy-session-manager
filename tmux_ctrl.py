@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import os
+import re
 import shlex
 import subprocess
 import threading
@@ -16,6 +17,17 @@ TMUX_SOCKET = "agym"
 TMUX_SESSION = "main"
 MANAGER_WINDOW = "manager"
 
+WAITING_PROMPT_RE = re.compile(
+    r"(?:"
+    r"allow\s+once|always\s+allow|allow\s+for\s+this|allow\s+all|yes,\s*allow"
+    r"|approve\s+this|requires\s+approval|permission\s+(?:required|request|prompt)"
+    r"|do\s+you\s+want\s+to\s+(?:proceed|allow|run|continue|approve)"
+    r"|enter\s+to\s+confirm|esc\s+to\s+(?:cancel|deny|reject)"
+    r"|\[[yY]/[nN]\]\s*$|\([yY]/[nN]\)\s*$"
+    r")",
+    re.IGNORECASE,
+)
+
 
 @dataclasses.dataclass
 class TmuxSessionWindow:
@@ -25,6 +37,7 @@ class TmuxSessionWindow:
     cwd: str
     title: str
     pane_dead: bool = False
+    waiting_for_user: bool = False
 
 
 def _run_tmux(*args: str, check: bool = False) -> subprocess.CompletedProcess:
@@ -234,6 +247,19 @@ def capture_pane(window_id: str, lines: int = 35) -> str:
     if res.returncode != 0:
         return ""
     return res.stdout.rstrip()
+
+
+def detect_waiting_prompt(window_id: str) -> bool:
+    """Return True if the bottom of a tmux window shows a permission/confirmation prompt."""
+    text = capture_pane(window_id, lines=14)
+    if not text:
+        return False
+    non_empty = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    tail = non_empty[-10:]
+    for line in tail:
+        if WAITING_PROMPT_RE.search(line):
+            return True
+    return False
 
 
 def detach_client() -> None:

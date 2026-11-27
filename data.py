@@ -45,6 +45,7 @@ class SessionInfo:
     tmux_window_id: Optional[str] = None
     tmux_window_name: Optional[str] = None
     is_externally_locked: bool = False
+    waiting_for_user: bool = False
     alias: Optional[str] = None
     pinned: bool = False
 
@@ -64,7 +65,9 @@ class SessionInfo:
 
     @property
     def state_kind(self) -> str:
-        """Return one of: running, background, active_idle, external_idle, history."""
+        """Return one of: waiting, running, background, active_idle, external_idle, history."""
+        if self.waiting_for_user or "WAITING" in self.status:
+            return "waiting"
         if "RUNNING" in self.status:
             return "running"
         if self.not_fully_idle:
@@ -434,6 +437,7 @@ def fetch_sessions(
                 parent_conversation_id=str(r["parent_conversation_id"] or ""),
                 agent_name=str(r["agent_name"] or ""),
                 is_externally_locked=locked,
+                waiting_for_user=("WAITING" in status_str),
                 alias=alias,
                 pinned=(cid in pinned_set),
             )

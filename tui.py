@@ -280,11 +280,18 @@ class SessionListItem(ListItem):
 
         if self.unlinked_window is not None:
             w = self.unlinked_window
-            spin = SPINNER_RUNNING[frame % len(SPINNER_RUNNING)]
             ws = data.shorten_path(w.cwd, 34)
             title = escape(w.title or w.window_name)
+            if w.waiting_for_user:
+                blink = (frame // 4) % 2 == 0
+                icon = "[bold #f7768e on #3b1d2a]⚠[/]" if blink else "[bold #e0af68]⚠[/]"
+                tag = "[bold #f7768e]WAITING[/]"
+            else:
+                spin = SPINNER_RUNNING[frame % len(SPINNER_RUNNING)]
+                icon = f"[bold #7dcfff]{spin}[/]"
+                tag = "[dim cyan](active)[/]"
             self._label.update(
-                f"[bold #7dcfff]{spin}[/] [bold]{title}[/] [dim cyan](active)[/]\n"
+                f"{icon} [bold]{title}[/] {tag}\n"
                 f"  [dim]{escape(ws)}[/]"
             )
             return
@@ -292,7 +299,11 @@ class SessionListItem(ListItem):
         assert self.session is not None
         s = self.session
         kind = s.state_kind
-        if kind == "running":
+        if kind == "waiting":
+            blink = (frame // 4) % 2 == 0
+            icon = "[bold #f7768e on #3b1d2a]⚠[/]" if blink else "[bold #e0af68]⚠[/]"
+            badge = "[bold #f7768e]WAITING[/]"
+        elif kind == "running":
             icon = f"[bold #73daca]{SPINNER_RUNNING[frame % len(SPINNER_RUNNING)]}[/]"
             badge = "[#73daca]running[/]"
         elif kind == "background":
@@ -499,6 +510,7 @@ class AgySessionManagerApp(App):
         Binding("delete", "delete_sessions", "Delete", show=False),
         Binding("m", "send_message", "Msg", show=True),
         Binding("c", "handover_context", "Handover", show=True),
+        Binding("w", "jump_waiting", "Waiting", show=True),
         Binding("n", "new_session", "New", show=True),
         Binding("k", "kill_active", "Stop Bg", show=True),
         Binding("r", "rename_selected", "Rename", show=True),
@@ -523,6 +535,7 @@ class AgySessionManagerApp(App):
         self._pending_mode: Optional[str] = None  # "delete" | "quit" | None
         self._pending_delete_targets: list[data.SessionInfo] = []
         self._rebuilding_list: bool = False
+        self._last_jumped_waiting_wid: Optional[str] = None
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="top-bar"):
@@ -546,6 +559,7 @@ class AgySessionManagerApp(App):
             "[bold #f7768e]d[/] 刪除  "
             "[bold #7aa2f7]m[/] 傳訊  "
             "[bold #7aa2f7]c[/] 轉交  "
+            "[bold #f7768e]w[/] 跳權限  "
             "[bold #7aa2f7]n[/] 新增  "
             "[bold #7aa2f7]k[/] 關閉背景  "
             "[bold #7aa2f7]r[/] 改名  "
@@ -571,7 +585,7 @@ class AgySessionManagerApp(App):
             if isinstance(item, SessionListItem) and item.section_header is None:
                 if item.unlinked_window is not None or (
                     item.session is not None
-                    and item.session.state_kind in ("running", "background")
+                    and item.session.state_kind in ("waiting", "running", "background")
                 ):
                     item.render_row(self.frame)
 
@@ -585,15 +599,25 @@ class AgySessionManagerApp(App):
         scope_el = self.query_one("#scope-badge", Static)
         active_cnt = len(self._active_windows)
         sel_cnt = len(self.selected_ids)
+        unlinked_wait = sum(1 for w in self._active_windows if not w.conv_id and w.waiting_for_user)
+        sess_wait = sum(1 for s in self._sessions if s.state_kind == "waiting")
+        wait_cnt = unlinked_wait + sess_wait
+        wait_part = f"  [bold #f7768e]⚠ Waiting: {wait_cnt} (w)[/]" if wait_cnt > 0 else ""
         sel_part = f"  [bold #f7768e]Selected: {sel_cnt}[/]" if sel_cnt > 0 else ""
         if self.all_workspaces:
-            scope_el.update(f"[bold #9ece6a]All Workspaces[/]  [dim]Active: {active_cnt}[/]{sel_part}")
+            scope_el.update(
+                f"[bold #9ece6a]All Workspaces[/]  [dim]Active: {active_cnt}[/]{wait_part}{sel_part}"
+            )
         else:
             short = data.shorten_path(self.launch_cwd, 28)
-            scope_el.update(f"[bold #7dcfff]Workspace: {escape(short)}[/]  [dim]Active: {active_cnt}[/]{sel_part}")
+            scope_el.update(
+                f"[bold #7dcfff]Workspace: {escape(short)}[/]  [dim]Active: {active_cnt}[/]{wait_part}{sel_part}"
+            )
 
     def _refresh_data(self, force: bool = False) -> None:
         windows = tmux_ctrl.list_session_windows()
+        for w in windows:
+            w.waiting_for_user = tmux_ctrl.detect_waiting_prompt(w.window_id)
         win_by_cid = {w.conv_id: w for w in windows if w.conv_id}
         unlinked = [w for w in windows if not w.conv_id]
 
@@ -609,17 +633,19 @@ class AgySessionManagerApp(App):
             if w:
                 s.tmux_window_id = w.window_id
                 s.tmux_window_name = w.window_name
+                if w.waiting_for_user:
+                    s.waiting_for_user = True
 
-        # Split into active (in tmux or running) vs history
+        # Split into active (in tmux, waiting, or running) vs history
         active_sessions = [
-            s for s in sessions if s.is_active_in_tmux or s.state_kind in ("running", "background")
+            s for s in sessions if s.is_active_in_tmux or s.state_kind in ("waiting", "running", "background")
         ]
         history_sessions = [
-            s for s in sessions if not (s.is_active_in_tmux or s.state_kind in ("running", "background"))
+            s for s in sessions if not (s.is_active_in_tmux or s.state_kind in ("waiting", "running", "background"))
         ]
 
-        # Pinned first within each group, then recency
-        active_sessions.sort(key=lambda s: (not s.pinned, -s.last_modified_ts))
+        # Waiting first, then pinned, then recency
+        active_sessions.sort(key=lambda s: (s.state_kind != "waiting", not s.pinned, -s.last_modified_ts))
         history_sessions.sort(key=lambda s: (not s.pinned, -s.last_modified_ts))
 
         self._active_windows = windows
@@ -628,7 +654,7 @@ class AgySessionManagerApp(App):
 
         sig = repr(
             (
-                [(w.window_id, w.window_name, w.conv_id, w.cwd, w.title) for w in unlinked],
+                [(w.window_id, w.window_name, w.conv_id, w.cwd, w.title, w.waiting_for_user) for w in unlinked],
                 [
                     (
                         s.conversation_id,
@@ -638,6 +664,7 @@ class AgySessionManagerApp(App):
                         s.step_count,
                         s.tmux_window_id,
                         s.is_externally_locked,
+                        s.waiting_for_user,
                         s.pinned,
                     )
                     for s in active_sessions
@@ -761,6 +788,7 @@ class AgySessionManagerApp(App):
         s = item.session
         assert s is not None
         status_map = {
+            "waiting": "[bold #f7768e]⚠ WAITING FOR PERMISSION / INPUT[/]",
             "running": "[bold #73daca]● RUNNING[/]",
             "background": "[bold #e0af68]◐ BACKGROUND TASK[/]",
             "active_idle": "[bold #9ece6a]● ACTIVE (in background)[/]",
@@ -776,6 +804,12 @@ class AgySessionManagerApp(App):
             f"[dim]Dir:[/] {escape(s.workspace_path or '(none)')}\n"
             f"[dim]ID:[/]  {escape(s.conversation_id)}"
         )
+
+        if s.state_kind == "waiting" and s.tmux_window_id:
+            pane_text = tmux_ctrl.capture_pane(s.tmux_window_id, lines=40)
+            if pane_text:
+                body.update(Text(pane_text, style="#f7768e"))
+                return
 
         msgs = data.load_transcript_preview(s.conversation_id, max_messages=8)
         if msgs:
@@ -969,6 +1003,56 @@ class AgySessionManagerApp(App):
             self.run_worker(_worker, thread=True)
 
         self.push_screen(HandoverModal(src, targets, initial_ctx), _after)
+
+    def action_jump_waiting(self) -> None:
+        if self._pending_mode is not None:
+            self._clear_confirm()
+        lv = self.query_one("#session-list", ListView)
+        waiting_live: list[tuple[int, str, str]] = []  # (list_idx, window_id, title)
+        waiting_other: list[tuple[int, data.SessionInfo]] = []
+
+        for idx, child in enumerate(lv.children):
+            if not isinstance(child, SessionListItem) or child.disabled:
+                continue
+            if child.unlinked_window is not None and child.unlinked_window.waiting_for_user:
+                w = child.unlinked_window
+                waiting_live.append((idx, w.window_id, w.title or w.window_name))
+            elif child.session is not None and child.session.state_kind == "waiting":
+                s = child.session
+                if s.tmux_window_id:
+                    waiting_live.append((idx, s.tmux_window_id, s.display_title))
+                else:
+                    waiting_other.append((idx, s))
+
+        if waiting_live:
+            chosen = waiting_live[0]
+            if len(waiting_live) > 1 and self._last_jumped_waiting_wid is not None:
+                wids = [e[1] for e in waiting_live]
+                if self._last_jumped_waiting_wid in wids:
+                    next_pos = (wids.index(self._last_jumped_waiting_wid) + 1) % len(waiting_live)
+                    chosen = waiting_live[next_pos]
+            idx, wid, _title = chosen
+            self._last_jumped_waiting_wid = wid
+            lv.index = idx
+            tmux_ctrl.select_window(wid)
+            return
+
+        if waiting_other:
+            idx, s = waiting_other[0]
+            lv.index = idx
+            if s.is_externally_locked:
+                self.notify(
+                    f'"{s.display_title}" 正在其他終端等待確認',
+                    severity="warning",
+                )
+            else:
+                self.notify(
+                    f'已定位到等待確認的 "{s.display_title}"（按 Enter 開啟）',
+                    severity="information",
+                )
+            return
+
+        self.notify("目前沒有等待權限確認的 session", severity="information")
 
     def action_new_session(self) -> None:
         if self._pending_mode is not None:

@@ -479,7 +479,7 @@ def _strip_jetbox_pb(remove_ids: set[str]) -> None:
 
     if changed:
         try:
-            tmp = JETBOX_PB_PATH.with_suffix(".pb.tmp")
+            tmp = JETBOX_PB_PATH.with_suffix(".tmp")
             tmp.write_bytes(bytes(out))
             tmp.replace(JETBOX_PB_PATH)
         except OSError:
